@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "plan-service"
+version = "0.1.0"
+description = "Fitboddy plan-service"
+authors = ["Fitboddy Team"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.136.1"
+uvicorn = { extras = ["standard"], version = "^0.46.0" }
+sqlalchemy = "^2.0.44"
+psycopg = { extras = ["binary"], version = "^3.2.11" }
+pydantic-settings = "^2.14.0"
+alembic = "^1.18.4"
+httpx = "^0.28.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.2"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
