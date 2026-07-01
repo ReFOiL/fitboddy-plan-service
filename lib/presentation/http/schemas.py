@@ -1,6 +1,9 @@
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+WorkoutCategory = Literal["upper", "lower", "core", "full_body"]
 
 
 class HealthResponse(BaseModel):
@@ -23,7 +26,7 @@ class UpsertTrainerExerciseRequest(BaseModel):
     equipment: str = Field(min_length=2, max_length=32, default="none")
     is_cardio: bool = False
     difficulty: int = Field(default=1, ge=1, le=5)
-    workout_category: str = Field(min_length=2, max_length=50, default="full_body")
+    workout_category: WorkoutCategory = "full_body"
 
 
 class PlanExerciseResponse(BaseModel):
@@ -72,7 +75,7 @@ class TrainerExerciseResponse(BaseModel):
     equipment: str
     is_cardio: bool
     difficulty: int
-    workout_category: str
+    workout_category: WorkoutCategory
     is_active: bool
     created_at: datetime
     updated_at: datetime

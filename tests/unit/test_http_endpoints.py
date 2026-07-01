@@ -85,7 +85,7 @@ def test_trainer_catalog_crud() -> None:
         "equipment": "dumbbells",
         "is_cardio": False,
         "difficulty": 3,
-        "workout_category": "lower_body",
+        "workout_category": "lower",
     }
     with _client() as client:
         created = client.post(
@@ -105,7 +105,7 @@ def test_trainer_catalog_crud() -> None:
             "equipment": "dumbbells",
             "is_cardio": False,
             "difficulty": 4,
-            "workout_category": "lower_body",
+            "workout_category": "lower",
         }
         updated = client.put(
             f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}",
@@ -143,6 +143,21 @@ def test_trainer_catalog_rejects_duplicate_exercise_id() -> None:
         second = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}", json=payload)
         assert first.status_code == 201
         assert second.status_code == 409
+
+
+def test_trainer_catalog_rejects_cardio_workout_category() -> None:
+    trainer_user_id = "trainer_catalog_3"
+    exercise_id = "cardio_cat_test"
+    payload = {
+        "exercise_name": "Cardio category should be rejected",
+        "equipment": "none",
+        "is_cardio": True,
+        "difficulty": 2,
+        "workout_category": "cardio",
+    }
+    with _client() as client:
+        response = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}", json=payload)
+        assert response.status_code == 422
 
 
 def test_trainer_catalog_auto_seeds_baseline_for_new_trainer() -> None:

@@ -31,6 +31,8 @@ from domain.value_objects import EquipmentName, TrainingGoal, TrainingLevel, Wor
 
 
 class PlanService:
+    _ALLOWED_WORKOUT_CATEGORIES = {"upper", "lower", "core", "full_body"}
+
     def __init__(
         self,
         session: Session,
@@ -245,8 +247,11 @@ class PlanService:
             raise ValidationError("equipment must not be empty")
         if difficulty < 1 or difficulty > 5:
             raise ValidationError("difficulty must be between 1 and 5")
-        if not workout_category.strip():
+        normalized_category = workout_category.strip().lower()
+        if not normalized_category:
             raise ValidationError("workout_category must not be empty")
+        if normalized_category not in PlanService._ALLOWED_WORKOUT_CATEGORIES:
+            raise ValidationError("workout_category must be one of: upper, lower, core, full_body")
 
     def _ensure_trainer_catalog_baseline(self, trainer_user_id: str) -> None:
         existing = self._trainer_exercises.list_by_trainer(trainer_user_id, include_archived=True)
