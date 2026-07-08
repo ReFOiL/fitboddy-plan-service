@@ -23,6 +23,7 @@ class GeneratePlanRequest(BaseModel):
 
 class UpsertTrainerExerciseRequest(BaseModel):
     exercise_name: str = Field(min_length=2, max_length=128)
+    description: str | None = Field(default=None, max_length=4000)
     equipment: str = Field(min_length=2, max_length=32, default="none")
     is_cardio: bool = False
     difficulty: int = Field(default=1, ge=1, le=5)
@@ -72,10 +73,18 @@ class TrainerExerciseResponse(BaseModel):
     trainer_user_id: str
     exercise_id: str
     exercise_name: str
+    description: str | None = None
     equipment: str
     is_cardio: bool
     difficulty: int
     workout_category: WorkoutCategory
     is_active: bool
+    video_url: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ExerciseVideoUploadResponse(BaseModel):
+    trainer_user_id: str
+    exercise_id: str
+    video_url: str

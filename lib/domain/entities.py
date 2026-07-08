@@ -49,10 +49,12 @@ class TrainerExercise:
     trainer_user_id: str
     exercise_id: str
     exercise_name: str
+    description: str | None
     equipment: str
     is_cardio: bool
     difficulty: int
     workout_category: str
     is_active: bool
+    video_url: str | None
     created_at: datetime
     updated_at: datetime

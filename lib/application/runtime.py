@@ -9,6 +9,7 @@ from application.config import Settings
 from application.db import DatabaseManager
 from application.gateways import ProfileGateway
 from application.generation import build_default_generation_orchestrator
+from application.media_storage import S3MediaStorage
 from application.use_cases import PlanService
 
 
@@ -21,6 +22,11 @@ class PlanApplicationRuntime:
             http_client=self._http_client,
             profile_service_url=settings.profile_service_url,
         )
+        self._video_storage = self._build_video_storage(settings)
+
+    @property
+    def video_storage(self) -> S3MediaStorage | None:
+        return self._video_storage
 
     @contextmanager
     def plan_service_scope(self):
@@ -43,3 +49,18 @@ class PlanApplicationRuntime:
     def shutdown(self) -> None:
         self._http_client.close()
         self._db_manager.dispose()
+
+    @staticmethod
+    def _build_video_storage(settings: Settings) -> S3MediaStorage | None:
+        if not settings.s3_media_enabled:
+            return None
+        if not settings.s3_endpoint or not settings.s3_access_key or not settings.s3_secret_key:
+            return None
+        return S3MediaStorage(
+            endpoint=settings.s3_endpoint,
+            access_key=settings.s3_access_key,
+            secret_key=settings.s3_secret_key,
+            bucket=settings.s3_bucket,
+            secure=settings.s3_secure,
+            videos_prefix=settings.s3_videos_prefix,
+        )

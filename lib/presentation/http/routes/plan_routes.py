@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Query, Request, Response, status
+from fastapi import APIRouter, File, Query, Request, Response, UploadFile, status
 
 from presentation.http.schemas import (
+    ExerciseVideoUploadResponse,
     GeneratePlanRequest,
     PlanDayResponse,
     TrainerExerciseResponse,
@@ -46,6 +47,12 @@ class PlanRoutes:
         )
         self.router.add_api_route(
             "/trainers/{trainer_user_id}/exercises/{exercise_id}",
+            self.get_trainer_exercise,
+            methods=["GET"],
+            response_model=TrainerExerciseResponse,
+        )
+        self.router.add_api_route(
+            "/trainers/{trainer_user_id}/exercises/{exercise_id}",
             self.update_trainer_exercise,
             methods=["PUT"],
             response_model=TrainerExerciseResponse,
@@ -56,6 +63,24 @@ class PlanRoutes:
             methods=["POST"],
             status_code=status.HTTP_204_NO_CONTENT,
             response_class=Response,
+        )
+        self.router.add_api_route(
+            "/trainers/{trainer_user_id}/exercises/{exercise_id}/video",
+            self.upload_trainer_exercise_video,
+            methods=["POST"],
+            response_model=ExerciseVideoUploadResponse,
+        )
+        self.router.add_api_route(
+            "/trainers/{trainer_user_id}/exercises/{exercise_id}/video",
+            self.delete_trainer_exercise_video,
+            methods=["DELETE"],
+            status_code=status.HTTP_204_NO_CONTENT,
+            response_class=Response,
+        )
+        self.router.add_api_route(
+            "/trainers/media/{object_key:path}",
+            self.get_media,
+            methods=["GET"],
         )
 
     @staticmethod
@@ -88,6 +113,10 @@ class PlanRoutes:
         return request.app.state.plan_handler.add_trainer_exercise(trainer_user_id, exercise_id, payload)
 
     @staticmethod
+    def get_trainer_exercise(request: Request, trainer_user_id: str, exercise_id: str) -> TrainerExerciseResponse:
+        return request.app.state.plan_handler.get_trainer_exercise(trainer_user_id, exercise_id)
+
+    @staticmethod
     def update_trainer_exercise(
         request: Request,
         trainer_user_id: str,
@@ -100,3 +129,27 @@ class PlanRoutes:
     def archive_trainer_exercise(request: Request, trainer_user_id: str, exercise_id: str) -> Response:
         request.app.state.plan_handler.archive_trainer_exercise(trainer_user_id, exercise_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @staticmethod
+    async def upload_trainer_exercise_video(
+        request: Request,
+        trainer_user_id: str,
+        exercise_id: str,
+        file: UploadFile = File(...),
+    ) -> ExerciseVideoUploadResponse:
+        data = await file.read()
+        return await request.app.state.plan_handler.upload_trainer_exercise_video(
+            trainer_user_id,
+            exercise_id,
+            file.filename or "video.mp4",
+            data,
+        )
+
+    @staticmethod
+    async def delete_trainer_exercise_video(request: Request, trainer_user_id: str, exercise_id: str) -> Response:
+        await request.app.state.plan_handler.delete_trainer_exercise_video(trainer_user_id, exercise_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @staticmethod
+    async def get_media(request: Request, object_key: str):
+        return await request.app.state.plan_handler.get_media(object_key)

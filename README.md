@@ -17,9 +17,13 @@
 - `GET /api/v1/plans/users/{user_id}/active` - получить активный план пользователя
 - `GET /api/v1/plans/{plan_id}/days/{day_index}` - получить конкретный день плана
 - `GET /api/v1/trainers/{trainer_user_id}/exercises` - список упражнений тренера (`include_archived=true` для полного списка)
+- `GET /api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}` - получить упражнение тренера (для клиента — просмотр деталей)
 - `POST /api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}` - добавить упражнение в каталог тренера
 - `PUT /api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}` - обновить упражнение тренера
 - `POST /api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}/archive` - архивировать упражнение (soft archive)
+- `POST /api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}/video` - загрузить видео упражнения (multipart `file`, `.mp4`/`.mov`, до 200MB)
+- `DELETE /api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}/video` - удалить видео упражнения
+- `GET /api/v1/trainers/media/{object_key}` - проксирование медиа из MinIO
 
 ## Алгоритм
 

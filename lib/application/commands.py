@@ -36,6 +36,7 @@ class AddTrainerExerciseCommand:
     trainer_user_id: str
     exercise_id: str
     exercise_name: str
+    description: str | None
     equipment: str
     is_cardio: bool
     difficulty: int
@@ -47,6 +48,7 @@ class UpdateTrainerExerciseCommand:
     trainer_user_id: str
     exercise_id: str
     exercise_name: str
+    description: str | None
     equipment: str
     is_cardio: bool
     difficulty: int

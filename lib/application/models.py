@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from application.db import Base
@@ -82,11 +82,13 @@ class TrainerExerciseModel(Base):
     trainer_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     exercise_id: Mapped[str] = mapped_column(String(64), nullable=False)
     exercise_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     equipment: Mapped[str] = mapped_column(String(32), nullable=False, default="none")
     is_cardio: Mapped[bool] = mapped_column(nullable=False, default=False)
     difficulty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     workout_category: Mapped[str] = mapped_column(String(50), nullable=False, default="full_body")
     is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
+    video_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False),

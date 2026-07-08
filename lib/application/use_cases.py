@@ -160,11 +160,13 @@ class PlanService:
             trainer_user_id=command.trainer_user_id,
             exercise_id=command.exercise_id,
             exercise_name=command.exercise_name.strip(),
+            description=(command.description.strip() if command.description and command.description.strip() else None),
             equipment=command.equipment.strip().lower(),
             is_cardio=command.is_cardio,
             difficulty=command.difficulty,
             workout_category=command.workout_category.strip().lower(),
             is_active=True,
+            video_url=None,
         )
         self._trainer_exercises.add(model)
         try:
@@ -181,6 +183,7 @@ class PlanService:
         if model is None:
             raise TrainerExerciseNotFoundError("trainer exercise not found")
         model.exercise_name = command.exercise_name.strip()
+        model.description = command.description.strip() if command.description and command.description.strip() else None
         model.equipment = command.equipment.strip().lower()
         model.is_cardio = command.is_cardio
         model.difficulty = command.difficulty
@@ -191,6 +194,12 @@ class PlanService:
         self._session.refresh(model)
         return self._mapper.trainer_exercise_to_domain(model)
 
+    def get_trainer_exercise(self, trainer_user_id: str, exercise_id: str) -> TrainerExercise:
+        model = self._trainer_exercises.find_by_trainer_and_exercise_id(trainer_user_id, exercise_id)
+        if model is None:
+            raise TrainerExerciseNotFoundError("trainer exercise not found")
+        return self._mapper.trainer_exercise_to_domain(model)
+
     def archive_trainer_exercise(self, command: ArchiveTrainerExerciseCommand) -> None:
         model = self._trainer_exercises.find_by_trainer_and_exercise_id(command.trainer_user_id, command.exercise_id)
         if model is None:
@@ -199,6 +208,31 @@ class PlanService:
             return
         model.is_active = False
         self._session.commit()
+
+    def set_trainer_exercise_video_url(
+        self,
+        trainer_user_id: str,
+        exercise_id: str,
+        video_url: str,
+    ) -> tuple[TrainerExercise, str | None]:
+        model = self._trainer_exercises.find_by_trainer_and_exercise_id(trainer_user_id, exercise_id)
+        if model is None:
+            raise TrainerExerciseNotFoundError("trainer exercise not found")
+        previous_video_url = model.video_url
+        model.video_url = video_url
+        self._session.commit()
+        self._session.refresh(model)
+        return self._mapper.trainer_exercise_to_domain(model), previous_video_url
+
+    def clear_trainer_exercise_video_url(self, trainer_user_id: str, exercise_id: str) -> tuple[TrainerExercise, str | None]:
+        model = self._trainer_exercises.find_by_trainer_and_exercise_id(trainer_user_id, exercise_id)
+        if model is None:
+            raise TrainerExerciseNotFoundError("trainer exercise not found")
+        previous_video_url = model.video_url
+        model.video_url = None
+        self._session.commit()
+        self._session.refresh(model)
+        return self._mapper.trainer_exercise_to_domain(model), previous_video_url
 
     @staticmethod
     def _normalize_workouts_per_week(value: int) -> int:
