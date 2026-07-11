@@ -1,8 +1,30 @@
 from __future__ import annotations
 
+import json
+
 from application.generation.contracts import AbstractCatalogProvider
 from application.generation.models import ExerciseCandidate, PlanGenerationInput
 from application.repositories import TrainerExerciseRepository
+
+
+def _parse_scheme_steps(raw: str | None) -> tuple[float, ...]:
+    if not raw:
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return ()
+    if not isinstance(parsed, list):
+        return ()
+    steps: list[float] = []
+    for item in parsed:
+        try:
+            value = float(item)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            steps.append(value)
+    return tuple(steps)
 
 
 class TrainerCatalogProvider(AbstractCatalogProvider):
@@ -40,6 +62,8 @@ class TrainerCatalogProvider(AbstractCatalogProvider):
                 default_duration_seconds=item.default_duration_seconds,
                 default_rest_seconds=item.default_rest_seconds,
                 default_weight_kg=item.default_weight_kg,
+                load_scheme=item.load_scheme or "flat",
+                scheme_steps=_parse_scheme_steps(item.scheme_steps_json),
             )
             for item in trainer_exercises
         ]

@@ -1,9 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
-from domain.value_objects import EquipmentName, TrainingGoal, TrainingLevel, WorkoutLocation
+from domain.value_objects import TrainingGoal, TrainingLevel, WorkoutLocation
+
+
+@dataclass(frozen=True)
+class SetPrescription:
+    set_index: int
+    reps: int | None
+    duration_seconds: int | None
+    weight_kg: float | None
+    rest_seconds: int | None
 
 
 @dataclass(frozen=True)
@@ -20,6 +29,8 @@ class ExerciseCandidate:
     default_duration_seconds: int | None = None
     default_rest_seconds: int = 60
     default_weight_kg: float | None = None
+    load_scheme: str = "flat"
+    scheme_steps: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -31,6 +42,7 @@ class ExerciseLine:
     duration_seconds: int | None
     rest_seconds: int | None
     weight_kg: float | None = None
+    set_prescriptions: tuple[SetPrescription, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -49,7 +61,8 @@ class PlanGenerationInput:
     level: TrainingLevel
     workout_location: WorkoutLocation | None
     workouts_per_week: int
-    equipment: set[EquipmentName]
+    available_equipment: set[str]
     start_date: date
     recent_exercise_ids: set[str]
     is_first_plan: bool
+    client_working_weights: dict[str, float] = field(default_factory=dict)

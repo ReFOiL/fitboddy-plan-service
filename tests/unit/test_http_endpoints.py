@@ -21,7 +21,7 @@ def test_generate_and_read_active_plan() -> None:
         "level": "beginner",
         "workout_location": "home",
         "workouts_per_week": 3,
-        "equipment": ["none", "dumbbells"],
+        "unavailable_equipment": ["none", "dumbbells"],
     }
     with _client() as client:
         generate = client.post("/api/v1/plans/generate", json=payload)
@@ -57,7 +57,7 @@ def test_plan_keeps_trainer_binding() -> None:
         "level": "intermediate",
         "workout_location": "gym",
         "workouts_per_week": 4,
-        "equipment": ["dumbbells", "barbell"],
+        "unavailable_equipment": ["dumbbells", "barbell"],
     }
     payload_b = {
         "trainer_user_id": "trainer_b",
@@ -66,7 +66,7 @@ def test_plan_keeps_trainer_binding() -> None:
         "level": "intermediate",
         "workout_location": "gym",
         "workouts_per_week": 4,
-        "equipment": ["dumbbells", "barbell"],
+        "unavailable_equipment": ["dumbbells", "barbell"],
     }
     with _client() as client:
         plan_a = client.post("/api/v1/plans/generate", json=payload_a)
@@ -284,9 +284,167 @@ def test_generate_plan_requires_completed_questionnaire_when_guard_enabled() -> 
             "level": "beginner",
             "workout_location": "home",
             "workouts_per_week": 3,
-            "equipment": ["none"],
+            "unavailable_equipment": ["none"],
         }
         response = client.post("/api/v1/plans/generate", json=payload)
         assert response.status_code == 422
         assert "questionnaire is incomplete" in response.json()["detail"]
         runtime._settings.require_profile_completion = False
+
+
+def test_client_loads_and_scheme_affect_generated_plan() -> None:
+    trainer_user_id = "trainer_loads_1"
+    client_user_id = "client_loads_1"
+    with _client() as client:
+        created = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            json={
+                "exercise_name": "Жим лёжа",
+                "equipment": "barbell",
+                "is_cardio": False,
+                "is_hold": False,
+                "difficulty": 3,
+                "workout_category": "upper",
+                "default_sets": 4,
+                "default_reps": 6,
+                "default_rest_seconds": 90,
+                "default_weight_kg": 40,
+                "load_scheme": "ascending",
+            },
+        )
+        assert created.status_code == 201
+        row_id = created.json()["row_id"]
+        assert created.json()["load_scheme"] == "ascending"
+
+        load = client.put(
+            f"/api/v1/clients/{client_user_id}/trainers/{trainer_user_id}/loads/{row_id}",
+            json={"working_weight_kg": 100},
+        )
+        assert load.status_code == 200
+        assert load.json()["working_weight_kg"] == 100
+
+        listed_loads = client.get(f"/api/v1/clients/{client_user_id}/trainers/{trainer_user_id}/loads")
+        assert listed_loads.status_code == 200
+        assert any(item["exercise_row_id"] == row_id for item in listed_loads.json())
+
+        generated = client.post(
+            "/api/v1/plans/generate",
+            json={
+                "trainer_user_id": trainer_user_id,
+                "user_id": client_user_id,
+                "goal": "maintenance",
+                "level": "intermediate",
+                "workout_location": "gym",
+                "workouts_per_week": 3,
+                "unavailable_equipment": [],
+            },
+        )
+        assert generated.status_code == 201
+        exercises = [
+            exercise
+            for day in generated.json()["days"]
+            for exercise in day["exercises"]
+            if exercise["exercise_id"] == row_id
+        ]
+        assert exercises
+        sample = exercises[0]
+        assert sample["set_prescriptions"]
+        assert sample["weight_kg"] == 100
+        assert sample["set_prescriptions"][0]["weight_kg"] < sample["set_prescriptions"][-1]["weight_kg"]
+        assert sample["set_prescriptions"][-1]["weight_kg"] == 100
+
+
+def test_unavailable_equipment_excludes_matching_exercises() -> None:
+    trainer_user_id = "trainer_excl_1"
+    client_user_id = "client_excl_1"
+    with _client() as client:
+        barbell = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            json={
+                "exercise_name": "Жим штанги",
+                "equipment": "barbell",
+                "is_cardio": False,
+                "is_hold": False,
+                "difficulty": 2,
+                "workout_category": "upper",
+                "default_sets": 3,
+                "default_reps": 8,
+                "default_rest_seconds": 60,
+            },
+        )
+        bodyweight = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            json={
+                "exercise_name": "Отжимания тест",
+                "equipment": "none",
+                "is_cardio": False,
+                "is_hold": False,
+                "difficulty": 2,
+                "workout_category": "upper",
+                "default_sets": 3,
+                "default_reps": 10,
+                "default_rest_seconds": 45,
+            },
+        )
+        custom = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            json={
+                "exercise_name": "Аэробайк",
+                "equipment": "Аэробайк",
+                "is_cardio": True,
+                "is_hold": True,
+                "difficulty": 2,
+                "workout_category": "full_body",
+                "default_sets": 3,
+                "default_duration_seconds": 40,
+                "default_rest_seconds": 30,
+            },
+        )
+        assert barbell.status_code == 201
+        assert bodyweight.status_code == 201
+        assert custom.status_code == 201
+        barbell_id = barbell.json()["row_id"]
+        bodyweight_id = bodyweight.json()["row_id"]
+        air_bike_id = custom.json()["row_id"]
+        assert custom.json()["equipment"] == "Аэробайк"
+
+        excluded = client.post(
+            "/api/v1/plans/generate",
+            json={
+                "trainer_user_id": trainer_user_id,
+                "user_id": client_user_id,
+                "goal": "maintenance",
+                "level": "intermediate",
+                "workout_location": "gym",
+                "workouts_per_week": 3,
+                "unavailable_equipment": ["barbell"],
+            },
+        )
+        assert excluded.status_code == 201
+        exercise_ids = {
+            exercise["exercise_id"]
+            for day in excluded.json()["days"]
+            for exercise in day["exercises"]
+        }
+        assert barbell_id not in exercise_ids
+        assert bodyweight_id in exercise_ids or air_bike_id in exercise_ids
+
+        without_air = client.post(
+            "/api/v1/plans/generate",
+            json={
+                "trainer_user_id": trainer_user_id,
+                "user_id": f"{client_user_id}_2",
+                "goal": "endurance",
+                "level": "intermediate",
+                "workout_location": "gym",
+                "workouts_per_week": 3,
+                "unavailable_equipment": ["аэробайк"],
+            },
+        )
+        assert without_air.status_code == 201
+        air_ids = {
+            exercise["exercise_id"]
+            for day in without_air.json()["days"]
+            for exercise in day["exercises"]
+        }
+        assert air_bike_id not in air_ids

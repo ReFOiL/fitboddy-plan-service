@@ -1,5 +1,11 @@
-from domain.entities import PlanDay, TrainingPlan
-from presentation.http.schemas import PlanDayResponse, PlanExerciseResponse, TrainingPlanResponse
+from domain.entities import ClientExerciseLoad, PlanDay, TrainingPlan
+from presentation.http.schemas import (
+    ClientExerciseLoadResponse,
+    PlanDayResponse,
+    PlanExerciseResponse,
+    SetPrescriptionResponse,
+    TrainingPlanResponse,
+)
 
 
 class PlanResponseFactory:
@@ -42,7 +48,28 @@ class PlanResponseFactory:
                     duration_seconds=line.duration_seconds,
                     rest_seconds=line.rest_seconds,
                     weight_kg=line.weight_kg,
+                    set_prescriptions=[
+                        SetPrescriptionResponse(
+                            set_index=item.set_index,
+                            reps=item.reps,
+                            duration_seconds=item.duration_seconds,
+                            weight_kg=item.weight_kg,
+                            rest_seconds=item.rest_seconds,
+                        )
+                        for item in line.set_prescriptions
+                    ],
                 )
                 for line in day.exercises
             ],
+        )
+
+    @staticmethod
+    def from_domain_client_load(load: ClientExerciseLoad) -> ClientExerciseLoadResponse:
+        return ClientExerciseLoadResponse(
+            load_id=load.load_id,
+            client_user_id=load.client_user_id,
+            trainer_user_id=load.trainer_user_id,
+            exercise_row_id=load.exercise_row_id,
+            working_weight_kg=load.working_weight_kg,
+            updated_at=load.updated_at,
         )

@@ -9,11 +9,13 @@ from presentation.http.error_translator import ErrorTranslator
 from presentation.http.request_factory import PlanRequestFactory
 from presentation.http.response_factory import PlanResponseFactory
 from presentation.http.schemas import (
+    ClientExerciseLoadResponse,
     ExerciseVideoUploadResponse,
     GeneratePlanRequest,
     PlanDayResponse,
     TrainerExerciseResponse,
     TrainingPlanResponse,
+    UpsertClientLoadRequest,
     UpsertTrainerExerciseRequest,
 )
 
@@ -74,6 +76,39 @@ class PlanHttpHandler:
                     self._request_factory.to_list_trainer_exercises_command(trainer_user_id, include_archived)
                 )
                 return [TrainerExerciseResponse.model_validate(item, from_attributes=True) for item in items]
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def list_client_loads(self, client_user_id: str, trainer_user_id: str) -> list[ClientExerciseLoadResponse]:
+        try:
+            with self._runtime.plan_service_scope() as plan_service:
+                items = plan_service.list_client_loads(
+                    self._request_factory.to_list_client_loads_command(client_user_id, trainer_user_id)
+                )
+                return [self._response_factory.from_domain_client_load(item) for item in items]
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def upsert_client_load(
+        self,
+        client_user_id: str,
+        trainer_user_id: str,
+        exercise_row_id: str,
+        payload: UpsertClientLoadRequest,
+    ) -> ClientExerciseLoadResponse:
+        try:
+            with self._runtime.plan_service_scope() as plan_service:
+                item = plan_service.upsert_client_load(
+                    self._request_factory.to_upsert_client_load_command(
+                        client_user_id,
+                        trainer_user_id,
+                        exercise_row_id,
+                        payload,
+                    )
+                )
+                return self._response_factory.from_domain_client_load(item)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")

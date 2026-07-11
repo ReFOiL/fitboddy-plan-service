@@ -1,11 +1,13 @@
 from fastapi import APIRouter, File, Query, Request, Response, UploadFile, status
 
 from presentation.http.schemas import (
+    ClientExerciseLoadResponse,
     ExerciseVideoUploadResponse,
     GeneratePlanRequest,
     PlanDayResponse,
     TrainerExerciseResponse,
     TrainingPlanResponse,
+    UpsertClientLoadRequest,
     UpsertTrainerExerciseRequest,
 )
 
@@ -82,6 +84,18 @@ class PlanRoutes:
             self.get_media,
             methods=["GET"],
         )
+        self.router.add_api_route(
+            "/clients/{client_user_id}/trainers/{trainer_user_id}/loads",
+            self.list_client_loads,
+            methods=["GET"],
+            response_model=list[ClientExerciseLoadResponse],
+        )
+        self.router.add_api_route(
+            "/clients/{client_user_id}/trainers/{trainer_user_id}/loads/{exercise_row_id}",
+            self.upsert_client_load,
+            methods=["PUT"],
+            response_model=ClientExerciseLoadResponse,
+        )
 
     @staticmethod
     def generate_plan(request: Request, payload: GeneratePlanRequest) -> TrainingPlanResponse:
@@ -152,3 +166,22 @@ class PlanRoutes:
     @staticmethod
     async def get_media(request: Request, object_key: str):
         return await request.app.state.plan_handler.get_media(object_key)
+
+    @staticmethod
+    def list_client_loads(request: Request, client_user_id: str, trainer_user_id: str) -> list[ClientExerciseLoadResponse]:
+        return request.app.state.plan_handler.list_client_loads(client_user_id, trainer_user_id)
+
+    @staticmethod
+    def upsert_client_load(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        exercise_row_id: str,
+        payload: UpsertClientLoadRequest,
+    ) -> ClientExerciseLoadResponse:
+        return request.app.state.plan_handler.upsert_client_load(
+            client_user_id,
+            trainer_user_id,
+            exercise_row_id,
+            payload,
+        )

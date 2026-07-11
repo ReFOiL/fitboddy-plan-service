@@ -13,20 +13,30 @@ from application.commands import (
     GeneratePlanCommand,
     GetActivePlanCommand,
     GetPlanDayCommand,
+    ListClientLoadsCommand,
     ListTrainerExercisesCommand,
     UpdateTrainerExerciseCommand,
+    UpsertClientLoadCommand,
 )
 from application.errors import PlanNotFoundError, TrainerExerciseNotFoundError, ValidationError
 from application.models import PlanDayModel, PlanExerciseModel, TrainerExerciseModel, TrainingPlanModel
 from application.repositories import (
+    ClientExerciseLoadRepository,
     PlanDayRepository,
     PlanExerciseRepository,
     PlanMapper,
     TrainerExerciseRepository,
     TrainingPlanRepository,
 )
-from domain.entities import PlanDay, TrainerExercise, TrainingPlan
-from domain.value_objects import EquipmentName, TrainingGoal, TrainingLevel, WorkoutLocation
+from domain.entities import ClientExerciseLoad, PlanDay, TrainerExercise, TrainingPlan
+from domain.equipment import (
+    is_valid_exercise_equipment,
+    normalize_equipment_list,
+    normalize_equipment_name,
+)
+from domain.value_objects import TrainingGoal, TrainingLevel, WorkoutLocation
+
+_ALLOWED_LOAD_SCHEMES = {"flat", "ascending", "descending", "custom"}
 
 
 class PlanService:
@@ -45,6 +55,7 @@ class PlanService:
         self._days = PlanDayRepository(session)
         self._lines = PlanExerciseRepository(session)
         self._trainer_exercises = TrainerExerciseRepository(session)
+        self._client_loads = ClientExerciseLoadRepository(session)
         self._mapper = PlanMapper()
         self._generation_orchestrator = generation_orchestrator
         self._profile_gateway = profile_gateway
@@ -58,7 +69,28 @@ class PlanService:
         workout_location = WorkoutLocation.from_raw(command.workout_location)
         workouts_per_week = self._normalize_workouts_per_week(command.workouts_per_week)
         start_date = command.start_date or self._next_monday(date.today())
-        equipment = self._resolve_equipment(command.equipment, workout_location)
+        unavailable = set(normalize_equipment_list(command.unavailable_equipment))
+        unavailable_keys = {item.casefold() for item in unavailable}
+
+        load_rows = self._client_loads.list_for_client_trainer(command.user_id, command.trainer_user_id)
+        client_working_weights = {
+            row.exercise_row_id: float(row.working_weight_kg)
+            for row in load_rows
+            if row.working_weight_kg is not None and row.working_weight_kg > 0
+        }
+
+        # Ensure catalog exists, then resolve available tags from trainer catalog minus exclusions.
+        self._ensure_trainer_catalog_baseline(command.trainer_user_id)
+        catalog_rows = self._trainer_exercises.list_by_trainer(command.trainer_user_id)
+        catalog_by_key: dict[str, str] = {}
+        for row in catalog_rows:
+            name = normalize_equipment_name(row.equipment or "")
+            if not name:
+                continue
+            catalog_by_key.setdefault(name.casefold(), name)
+        available_equipment = {"none"} | {
+            name for key, name in catalog_by_key.items() if key not in unavailable_keys
+        }
 
         request = PlanGenerationInput(
             trainer_user_id=command.trainer_user_id,
@@ -66,10 +98,11 @@ class PlanService:
             level=level,
             workout_location=workout_location,
             workouts_per_week=workouts_per_week,
-            equipment=equipment,
+            available_equipment=available_equipment,
             start_date=start_date,
             recent_exercise_ids=set(),
             is_first_plan=self._plans.find_active_by_user(command.user_id) is None,
+            client_working_weights=client_working_weights,
         )
         generation = self._generation_orchestrator.generate(request, match_limit=24)
         if not generation.matched_pool:
@@ -122,6 +155,7 @@ class PlanService:
                         duration_seconds=line.duration_seconds,
                         rest_seconds=line.rest_seconds,
                         weight_kg=line.weight_kg,
+                        set_prescriptions_json=self._mapper.dumps_set_prescriptions(line.set_prescriptions),
                     )
                 )
         self._session.commit()
@@ -150,6 +184,29 @@ class PlanService:
         )
         return [self._mapper.trainer_exercise_to_domain(item) for item in rows]
 
+    def list_client_loads(self, command: ListClientLoadsCommand) -> list[ClientExerciseLoad]:
+        rows = self._client_loads.list_for_client_trainer(command.client_user_id, command.trainer_user_id)
+        return [self._mapper.client_load_to_domain(item) for item in rows]
+
+    def upsert_client_load(self, command: UpsertClientLoadCommand) -> ClientExerciseLoad:
+        if command.working_weight_kg <= 0:
+            raise ValidationError("working_weight_kg must be > 0")
+        exercise = self._trainer_exercises.find_by_trainer_and_row_id(
+            command.trainer_user_id,
+            command.exercise_row_id,
+        )
+        if exercise is None or not exercise.is_active:
+            raise TrainerExerciseNotFoundError("trainer exercise not found")
+        model = self._client_loads.upsert(
+            client_user_id=command.client_user_id,
+            trainer_user_id=command.trainer_user_id,
+            exercise_row_id=command.exercise_row_id,
+            working_weight_kg=float(command.working_weight_kg),
+        )
+        self._session.commit()
+        self._session.refresh(model)
+        return self._mapper.client_load_to_domain(model)
+
     def add_trainer_exercise(self, command: AddTrainerExerciseCommand) -> TrainerExercise:
         self._validate_exercise_fields(
             command.equipment,
@@ -161,6 +218,8 @@ class PlanService:
             command.default_duration_seconds,
             command.default_rest_seconds,
             command.default_weight_kg,
+            command.load_scheme,
+            command.scheme_steps,
         )
         sets, reps, duration, rest, weight = self._normalize_baseline(
             command.is_hold,
@@ -170,12 +229,13 @@ class PlanService:
             command.default_rest_seconds,
             command.default_weight_kg,
         )
+        scheme, steps = self._normalize_scheme(command.load_scheme, command.scheme_steps, command.is_hold)
         model = TrainerExerciseModel(
             row_id=str(uuid4()),
             trainer_user_id=command.trainer_user_id,
             exercise_name=command.exercise_name.strip(),
             description=(command.description.strip() if command.description and command.description.strip() else None),
-            equipment=command.equipment.strip().lower(),
+            equipment=self._normalize_stored_equipment(command.equipment),
             is_cardio=command.is_cardio,
             is_hold=command.is_hold,
             difficulty=command.difficulty,
@@ -185,6 +245,8 @@ class PlanService:
             default_duration_seconds=duration,
             default_rest_seconds=rest,
             default_weight_kg=weight,
+            load_scheme=scheme,
+            scheme_steps_json=self._mapper.dumps_scheme_steps(steps),
             is_active=True,
             video_url=None,
         )
@@ -204,6 +266,8 @@ class PlanService:
             command.default_duration_seconds,
             command.default_rest_seconds,
             command.default_weight_kg,
+            command.load_scheme,
+            command.scheme_steps,
         )
         model = self._trainer_exercises.find_by_trainer_and_row_id(command.trainer_user_id, command.row_id)
         if model is None:
@@ -216,9 +280,10 @@ class PlanService:
             command.default_rest_seconds,
             command.default_weight_kg,
         )
+        scheme, steps = self._normalize_scheme(command.load_scheme, command.scheme_steps, command.is_hold)
         model.exercise_name = command.exercise_name.strip()
         model.description = command.description.strip() if command.description and command.description.strip() else None
-        model.equipment = command.equipment.strip().lower()
+        model.equipment = self._normalize_stored_equipment(command.equipment)
         model.is_cardio = command.is_cardio
         model.is_hold = command.is_hold
         model.difficulty = command.difficulty
@@ -228,6 +293,8 @@ class PlanService:
         model.default_duration_seconds = duration
         model.default_rest_seconds = rest
         model.default_weight_kg = weight
+        model.load_scheme = scheme
+        model.scheme_steps_json = self._mapper.dumps_scheme_steps(steps)
         if not model.is_active:
             model.is_active = True
         self._session.commit()
@@ -288,34 +355,6 @@ class PlanService:
         return from_date.fromordinal(from_date.toordinal() + (7 - weekday))
 
     @staticmethod
-    def _resolve_equipment(raw_equipment: list[str], workout_location: WorkoutLocation | None) -> set[EquipmentName]:
-        names: set[EquipmentName] = {EquipmentName.NONE}
-        for item in raw_equipment:
-            parsed = EquipmentName.from_raw(item)
-            if parsed is not None:
-                names.add(parsed)
-        if len(names) > 1:
-            return names
-        if workout_location == WorkoutLocation.HOME:
-            return {
-                EquipmentName.NONE,
-                EquipmentName.DUMBBELLS,
-                EquipmentName.RESISTANCE_BANDS,
-                EquipmentName.KETTLEBELL,
-            }
-        if workout_location == WorkoutLocation.GYM:
-            return {
-                EquipmentName.NONE,
-                EquipmentName.DUMBBELLS,
-                EquipmentName.BARBELL,
-                EquipmentName.RESISTANCE_BANDS,
-                EquipmentName.KETTLEBELL,
-                EquipmentName.TREADMILL,
-                EquipmentName.OTHER,
-            }
-        return set(EquipmentName)
-
-    @staticmethod
     def _validate_exercise_fields(
         equipment: str,
         difficulty: int,
@@ -326,9 +365,13 @@ class PlanService:
         default_duration_seconds: int | None,
         default_rest_seconds: int,
         default_weight_kg: float | None,
+        load_scheme: str,
+        scheme_steps: list[float],
     ) -> None:
         if not equipment.strip():
             raise ValidationError("equipment must not be empty")
+        if not is_valid_exercise_equipment(equipment):
+            raise ValidationError("equipment must be 'none' or a name (2–64 chars)")
         if difficulty < 1 or difficulty > 5:
             raise ValidationError("difficulty must be between 1 and 5")
         normalized_category = workout_category.strip().lower()
@@ -347,6 +390,24 @@ class PlanService:
                 raise ValidationError("default_duration_seconds must be between 5 and 3600 for timed exercises")
         elif default_reps is None or default_reps < 1 or default_reps > 100:
             raise ValidationError("default_reps must be between 1 and 100 for rep-based exercises")
+        scheme = load_scheme.strip().lower()
+        if scheme not in _ALLOWED_LOAD_SCHEMES:
+            raise ValidationError("load_scheme must be one of: flat, ascending, descending, custom")
+        if scheme == "custom":
+            if not scheme_steps:
+                raise ValidationError("scheme_steps required for custom load_scheme")
+            if any(step <= 0 for step in scheme_steps):
+                raise ValidationError("scheme_steps must contain positive coefficients")
+
+    @staticmethod
+    def _normalize_stored_equipment(equipment: str) -> str:
+        cleaned = " ".join(equipment.strip().split())
+        if cleaned.casefold() == "none":
+            return "none"
+        normalized = normalize_equipment_name(cleaned)
+        if normalized is None:
+            raise ValidationError("equipment must be 'none' or a name (2–64 chars)")
+        return normalized
 
     @staticmethod
     def _normalize_baseline(
@@ -362,6 +423,14 @@ class PlanService:
             return default_sets, None, default_duration_seconds, default_rest_seconds, weight
         return default_sets, default_reps, None, default_rest_seconds, weight
 
+    @staticmethod
+    def _normalize_scheme(load_scheme: str, scheme_steps: list[float], is_hold: bool) -> tuple[str, list[float]]:
+        _ = is_hold
+        scheme = load_scheme.strip().lower() or "flat"
+        if scheme == "custom":
+            return scheme, [float(step) for step in scheme_steps if step > 0]
+        return scheme, []
+
     def _ensure_trainer_catalog_baseline(self, trainer_user_id: str) -> None:
         existing = self._trainer_exercises.list_by_trainer(trainer_user_id, include_archived=True)
         if existing:
@@ -373,7 +442,7 @@ class PlanService:
                 level=TrainingLevel.INTERMEDIATE,
                 workout_location=WorkoutLocation.BOTH,
                 workouts_per_week=3,
-                equipment=set(EquipmentName),
+                available_equipment={"none"},
                 start_date=date.today(),
                 recent_exercise_ids=set(),
                 is_first_plan=True,

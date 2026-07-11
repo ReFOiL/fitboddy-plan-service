@@ -4,7 +4,13 @@ import random
 from datetime import timedelta
 
 from application.generation.contracts import AbstractSchedulingCalculator
-from application.generation.models import ExerciseCandidate, ExerciseLine, PlanGenerationInput, ScheduledSession
+from application.generation.models import (
+    ExerciseCandidate,
+    ExerciseLine,
+    PlanGenerationInput,
+    ScheduledSession,
+    SetPrescription,
+)
 from domain.value_objects import TrainingGoal, TrainingLevel
 
 
@@ -83,12 +89,17 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
         picked: list[ExerciseCandidate] = [anchor]
         used = {anchor.exercise_id}
         cursor = (categories.index(anchor.workout_category) + 1) % len(categories) if anchor.workout_category in categories else 0
+        idle_rounds = 0
         while len(picked) < target and categories:
             category = categories[cursor % len(categories)]
             cursor += 1
             candidates = [item for item in by_category.get(category, []) if item.exercise_id not in used]
             if not candidates:
+                idle_rounds += 1
+                if idle_rounds >= len(categories):
+                    break
                 continue
+            idle_rounds = 0
             selected = rng.choice(candidates)
             picked.append(selected)
             used.add(selected.exercise_id)
@@ -112,14 +123,17 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
         span = session_max - session_min + 1
         return session_min + (mix % span)
 
-    @staticmethod
-    def _prescribe(exercise: ExerciseCandidate, *, sort_order: int, request: PlanGenerationInput) -> ExerciseLine:
+    @classmethod
+    def _prescribe(cls, exercise: ExerciseCandidate, *, sort_order: int, request: PlanGenerationInput) -> ExerciseLine:
         is_beginner_profile = request.level == TrainingLevel.BEGINNER or request.goal == TrainingGoal.REHABILITATION
         is_advanced_profile = request.level == TrainingLevel.ADVANCED and request.goal == TrainingGoal.MUSCLE_GAIN
 
         sets = max(1, exercise.default_sets)
         rest = max(0, exercise.default_rest_seconds)
-        weight = exercise.default_weight_kg
+        working_weight = request.client_working_weights.get(exercise.exercise_id)
+        if working_weight is None:
+            working_weight = exercise.default_weight_kg
+        weight = working_weight
 
         if exercise.is_hold:
             duration = max(5, exercise.default_duration_seconds or 35)
@@ -129,14 +143,29 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
                 rest = rest + 15
             elif is_advanced_profile and not request.is_first_plan:
                 duration = int(duration * 1.2)
+            steps = cls._resolve_scheme_steps(exercise.load_scheme, sets, exercise.scheme_steps)
+            # Timed primary progression is duration; weight (if any) stays flat across sets.
+            flat_weight = cls._scale_weight(weight, 1.0) if weight is not None else None
+            prescriptions = tuple(
+                SetPrescription(
+                    set_index=index + 1,
+                    reps=None,
+                    duration_seconds=cls._scale_duration(duration, step),
+                    weight_kg=flat_weight,
+                    rest_seconds=rest,
+                )
+                for index, step in enumerate(steps)
+            )
+            summary_duration = prescriptions[-1].duration_seconds if prescriptions else duration
             return ExerciseLine(
                 exercise=exercise,
                 sort_order=sort_order,
                 sets=sets,
                 reps=None,
-                duration_seconds=duration,
+                duration_seconds=summary_duration,
                 rest_seconds=rest,
-                weight_kg=weight,
+                weight_kg=flat_weight,
+                set_prescriptions=prescriptions,
             )
 
         reps = max(1, exercise.default_reps or 10)
@@ -147,8 +176,21 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
         elif is_advanced_profile and not request.is_first_plan:
             sets = sets + 1
             rest = rest + 30
-            if weight is not None:
+            if weight is not None and exercise.exercise_id not in request.client_working_weights:
                 weight = round(weight * 1.1, 1)
+
+        steps = cls._resolve_scheme_steps(exercise.load_scheme, sets, exercise.scheme_steps)
+        prescriptions = tuple(
+            SetPrescription(
+                set_index=index + 1,
+                reps=reps,
+                duration_seconds=None,
+                weight_kg=cls._scale_weight(weight, step) if weight is not None else None,
+                rest_seconds=rest,
+            )
+            for index, step in enumerate(steps)
+        )
+        summary_weight = prescriptions[-1].weight_kg if prescriptions else weight
         return ExerciseLine(
             exercise=exercise,
             sort_order=sort_order,
@@ -156,5 +198,46 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
             reps=reps,
             duration_seconds=None,
             rest_seconds=rest,
-            weight_kg=weight,
+            weight_kg=summary_weight,
+            set_prescriptions=prescriptions,
         )
+
+    @staticmethod
+    def _resolve_scheme_steps(scheme: str, sets: int, custom_steps: tuple[float, ...]) -> list[float]:
+        normalized = (scheme or "flat").strip().lower()
+        if custom_steps and normalized == "custom":
+            steps = list(custom_steps)
+            if len(steps) >= sets:
+                return steps[:sets]
+            if steps:
+                return steps + [steps[-1]] * (sets - len(steps))
+        if normalized == "ascending":
+            if sets <= 1:
+                return [1.0]
+            return [round(0.7 + (0.3 * index / (sets - 1)), 3) for index in range(sets)]
+        if normalized == "descending":
+            if sets <= 1:
+                return [1.0]
+            return [round(1.0 - (0.3 * index / (sets - 1)), 3) for index in range(sets)]
+        if custom_steps:
+            steps = list(custom_steps)
+            if len(steps) >= sets:
+                return steps[:sets]
+            if steps:
+                return steps + [steps[-1]] * (sets - len(steps))
+        return [1.0] * sets
+
+    @staticmethod
+    def _scale_duration(base_duration: int, step: float) -> int:
+        raw = base_duration * step
+        if abs(step - 1.0) < 1e-9:
+            return max(5, int(round(raw)))
+        return max(5, int(round(raw)))
+
+    @staticmethod
+    def _scale_weight(base_weight: float, step: float) -> float:
+        raw = base_weight * step
+        # Preserve exact working/default weight on top-set (step=1.0); round ramps to 2.5 kg plates.
+        if abs(step - 1.0) < 1e-9:
+            return round(raw, 1)
+        return round(round(raw / 2.5) * 2.5, 1)

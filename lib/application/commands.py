@@ -10,7 +10,7 @@ class GeneratePlanCommand:
     level: str
     workout_location: str
     workouts_per_week: int
-    equipment: list[str]
+    unavailable_equipment: list[str]
     start_date: date | None
 
 
@@ -46,6 +46,8 @@ class AddTrainerExerciseCommand:
     default_duration_seconds: int | None
     default_rest_seconds: int
     default_weight_kg: float | None
+    load_scheme: str
+    scheme_steps: list[float]
 
 
 @dataclass(frozen=True)
@@ -64,9 +66,25 @@ class UpdateTrainerExerciseCommand:
     default_duration_seconds: int | None
     default_rest_seconds: int
     default_weight_kg: float | None
+    load_scheme: str
+    scheme_steps: list[float]
 
 
 @dataclass(frozen=True)
 class ArchiveTrainerExerciseCommand:
     trainer_user_id: str
     row_id: str
+
+
+@dataclass(frozen=True)
+class ListClientLoadsCommand:
+    client_user_id: str
+    trainer_user_id: str
+
+
+@dataclass(frozen=True)
+class UpsertClientLoadCommand:
+    client_user_id: str
+    trainer_user_id: str
+    exercise_row_id: str
+    working_weight_kg: float

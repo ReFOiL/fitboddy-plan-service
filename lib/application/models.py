@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from application.db import Base
@@ -71,6 +71,7 @@ class PlanExerciseModel(Base):
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rest_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    set_prescriptions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     day: Mapped[PlanDayModel] = relationship("PlanDayModel", back_populates="exercises")
 
@@ -92,9 +93,35 @@ class TrainerExerciseModel(Base):
     default_duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     default_rest_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     default_weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    load_scheme: Mapped[str] = mapped_column(String(32), nullable=False, default="flat")
+    scheme_steps_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
     video_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class ClientExerciseLoadModel(Base):
+    __tablename__ = "client_exercise_loads"
+    __table_args__ = (
+        UniqueConstraint(
+            "client_user_id",
+            "trainer_user_id",
+            "exercise_row_id",
+            name="uq_client_trainer_exercise_load",
+        ),
+    )
+
+    load_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    client_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    trainer_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    exercise_row_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    working_weight_kg: Mapped[float] = mapped_column(Float, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False),
         nullable=False,

@@ -2,7 +2,7 @@ from datetime import date
 
 from application.generation.calculators.workout_scheduling_calculator import WorkoutSchedulingCalculator
 from application.generation.models import ExerciseCandidate, PlanGenerationInput
-from domain.value_objects import EquipmentName, TrainingGoal, TrainingLevel, WorkoutLocation
+from domain.value_objects import TrainingGoal, TrainingLevel, WorkoutLocation
 
 
 def _request(**overrides: object) -> PlanGenerationInput:
@@ -12,7 +12,7 @@ def _request(**overrides: object) -> PlanGenerationInput:
         "level": TrainingLevel.INTERMEDIATE,
         "workout_location": WorkoutLocation.HOME,
         "workouts_per_week": 3,
-        "equipment": {EquipmentName.NONE},
+        "available_equipment": {"none"},
         "start_date": date(2026, 7, 13),
         "recent_exercise_ids": set(),
         "is_first_plan": False,
@@ -40,6 +40,52 @@ def test_hold_exercise_uses_baseline_duration() -> None:
     assert line.reps is None
     assert line.duration_seconds == 40
     assert line.rest_seconds == 50
+    assert len(line.set_prescriptions) == 3
+    assert all(item.weight_kg is None for item in line.set_prescriptions)
+    assert all(item.duration_seconds == 40 for item in line.set_prescriptions)
+
+
+def test_hold_with_weight_keeps_weight_flat_and_scales_duration() -> None:
+    carry = ExerciseCandidate(
+        "farmer_carry",
+        "Прогулка фермера",
+        "dumbbells",
+        False,
+        2,
+        "full_body",
+        True,
+        default_sets=3,
+        default_reps=None,
+        default_duration_seconds=40,
+        default_rest_seconds=60,
+        default_weight_kg=20,
+        load_scheme="ascending",
+    )
+    line = WorkoutSchedulingCalculator._prescribe(carry, sort_order=1, request=_request())
+    assert [item.duration_seconds for item in line.set_prescriptions] == [28, 34, 40]
+    assert all(item.weight_kg == 20 for item in line.set_prescriptions)
+    assert line.weight_kg == 20
+    assert line.duration_seconds == 40
+
+
+def test_hold_ascending_scheme_scales_duration() -> None:
+    plank = ExerciseCandidate(
+        "plank",
+        "Планка",
+        "none",
+        False,
+        1,
+        "core",
+        True,
+        default_sets=4,
+        default_reps=None,
+        default_duration_seconds=40,
+        default_rest_seconds=50,
+        load_scheme="ascending",
+    )
+    line = WorkoutSchedulingCalculator._prescribe(plank, sort_order=1, request=_request())
+    assert [item.duration_seconds for item in line.set_prescriptions] == [28, 32, 36, 40]
+    assert line.duration_seconds == 40
 
 
 def test_strength_exercise_uses_baseline_reps_and_weight() -> None:
@@ -61,6 +107,49 @@ def test_strength_exercise_uses_baseline_reps_and_weight() -> None:
     assert line.duration_seconds is None
     assert line.rest_seconds == 90
     assert line.weight_kg == 14
+    assert len(line.set_prescriptions) == 4
+    assert all(item.weight_kg == 14 for item in line.set_prescriptions)
+
+
+def test_client_working_weight_overrides_default() -> None:
+    press = ExerciseCandidate(
+        "ex-1",
+        "Жим",
+        "barbell",
+        False,
+        3,
+        "upper",
+        default_sets=3,
+        default_reps=8,
+        default_rest_seconds=90,
+        default_weight_kg=40,
+    )
+    line = WorkoutSchedulingCalculator._prescribe(
+        press,
+        sort_order=1,
+        request=_request(client_working_weights={"ex-1": 100}),
+    )
+    assert line.weight_kg == 100
+    assert all(item.weight_kg == 100 for item in line.set_prescriptions)
+
+
+def test_ascending_scheme_expands_sets() -> None:
+    bench = ExerciseCandidate(
+        "bench",
+        "Жим лёжа",
+        "barbell",
+        False,
+        4,
+        "upper",
+        default_sets=6,
+        default_reps=5,
+        default_rest_seconds=120,
+        default_weight_kg=100,
+        load_scheme="ascending",
+    )
+    line = WorkoutSchedulingCalculator._prescribe(bench, sort_order=1, request=_request())
+    assert [item.weight_kg for item in line.set_prescriptions] == [70.0, 75.0, 82.5, 87.5, 95.0, 100.0]
+    assert line.weight_kg == 100.0
 
 
 def test_beginner_scales_baseline_down() -> None:

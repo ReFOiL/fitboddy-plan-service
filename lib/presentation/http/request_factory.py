@@ -4,10 +4,12 @@ from application.commands import (
     GeneratePlanCommand,
     GetActivePlanCommand,
     GetPlanDayCommand,
+    ListClientLoadsCommand,
     ListTrainerExercisesCommand,
     UpdateTrainerExerciseCommand,
+    UpsertClientLoadCommand,
 )
-from presentation.http.schemas import GeneratePlanRequest, UpsertTrainerExerciseRequest
+from presentation.http.schemas import GeneratePlanRequest, UpsertClientLoadRequest, UpsertTrainerExerciseRequest
 
 
 class PlanRequestFactory:
@@ -20,7 +22,7 @@ class PlanRequestFactory:
             level=payload.level,
             workout_location=payload.workout_location,
             workouts_per_week=payload.workouts_per_week,
-            equipment=payload.equipment,
+            unavailable_equipment=list(payload.unavailable_equipment),
             start_date=payload.start_date,
         )
 
@@ -43,6 +45,27 @@ class PlanRequestFactory:
         )
 
     @staticmethod
+    def to_list_client_loads_command(client_user_id: str, trainer_user_id: str) -> ListClientLoadsCommand:
+        return ListClientLoadsCommand(
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+        )
+
+    @staticmethod
+    def to_upsert_client_load_command(
+        client_user_id: str,
+        trainer_user_id: str,
+        exercise_row_id: str,
+        payload: UpsertClientLoadRequest,
+    ) -> UpsertClientLoadCommand:
+        return UpsertClientLoadCommand(
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            exercise_row_id=exercise_row_id,
+            working_weight_kg=payload.working_weight_kg,
+        )
+
+    @staticmethod
     def to_add_trainer_exercise_command(
         trainer_user_id: str,
         payload: UpsertTrainerExerciseRequest,
@@ -61,6 +84,8 @@ class PlanRequestFactory:
             default_duration_seconds=payload.default_duration_seconds,
             default_rest_seconds=payload.default_rest_seconds,
             default_weight_kg=payload.default_weight_kg,
+            load_scheme=payload.load_scheme,
+            scheme_steps=list(payload.scheme_steps),
         )
 
     @staticmethod
@@ -84,6 +109,8 @@ class PlanRequestFactory:
             default_duration_seconds=payload.default_duration_seconds,
             default_rest_seconds=payload.default_rest_seconds,
             default_weight_kg=payload.default_weight_kg,
+            load_scheme=payload.load_scheme,
+            scheme_steps=list(payload.scheme_steps),
         )
 
     @staticmethod

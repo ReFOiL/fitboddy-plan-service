@@ -58,10 +58,9 @@ class EquipmentName(StrEnum):
     NONE = "none"
     DUMBBELLS = "dumbbells"
     BARBELL = "barbell"
-    RESISTANCE_BANDS = "resistance_bands"
     KETTLEBELL = "kettlebell"
+    RESISTANCE_BANDS = "resistance_bands"
     TREADMILL = "treadmill"
-    OTHER = "other"
 
     @classmethod
     def from_raw(cls, raw: str | "EquipmentName" | None) -> "EquipmentName | None":

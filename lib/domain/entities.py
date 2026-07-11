@@ -3,6 +3,15 @@ from datetime import date, datetime
 
 
 @dataclass(frozen=True)
+class PlanSetPrescription:
+    set_index: int
+    reps: int | None
+    duration_seconds: int | None
+    weight_kg: float | None
+    rest_seconds: int | None
+
+
+@dataclass(frozen=True)
 class PlanExercise:
     line_id: str
     exercise_id: str
@@ -15,6 +24,7 @@ class PlanExercise:
     duration_seconds: int | None
     rest_seconds: int | None
     weight_kg: float | None
+    set_prescriptions: list[PlanSetPrescription]
 
 
 @dataclass(frozen=True)
@@ -60,7 +70,19 @@ class TrainerExercise:
     default_duration_seconds: int | None
     default_rest_seconds: int
     default_weight_kg: float | None
+    load_scheme: str
+    scheme_steps: list[float]
     is_active: bool
     video_url: str | None
     created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class ClientExerciseLoad:
+    load_id: str
+    client_user_id: str
+    trainer_user_id: str
+    exercise_row_id: str
+    working_weight_kg: float
     updated_at: datetime

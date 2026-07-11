@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 WorkoutCategory = Literal["upper", "lower", "core", "full_body"]
+LoadScheme = Literal["flat", "ascending", "descending", "custom"]
 
 
 class HealthResponse(BaseModel):
@@ -17,14 +18,14 @@ class GeneratePlanRequest(BaseModel):
     level: str = Field(min_length=2, max_length=32, default="intermediate")
     workout_location: str = Field(min_length=2, max_length=16, default="both")
     workouts_per_week: int = Field(default=3, ge=1, le=7)
-    equipment: list[str] = Field(default_factory=list)
+    unavailable_equipment: list[str] = Field(default_factory=list)
     start_date: date | None = None
 
 
 class UpsertTrainerExerciseRequest(BaseModel):
     exercise_name: str = Field(min_length=2, max_length=128)
     description: str | None = Field(default=None, max_length=4000)
-    equipment: str = Field(min_length=2, max_length=32, default="none")
+    equipment: str = Field(min_length=2, max_length=64, default="none")
     is_cardio: bool = False
     is_hold: bool = False
     difficulty: int = Field(default=1, ge=1, le=5)
@@ -34,6 +35,29 @@ class UpsertTrainerExerciseRequest(BaseModel):
     default_duration_seconds: int | None = Field(default=None, ge=5, le=3600)
     default_rest_seconds: int = Field(default=60, ge=0, le=600)
     default_weight_kg: float | None = Field(default=None, ge=0)
+    load_scheme: LoadScheme = "flat"
+    scheme_steps: list[float] = Field(default_factory=list)
+
+
+class UpsertClientLoadRequest(BaseModel):
+    working_weight_kg: float = Field(gt=0)
+
+
+class ClientExerciseLoadResponse(BaseModel):
+    load_id: str
+    client_user_id: str
+    trainer_user_id: str
+    exercise_row_id: str
+    working_weight_kg: float
+    updated_at: datetime
+
+
+class SetPrescriptionResponse(BaseModel):
+    set_index: int
+    reps: int | None = None
+    duration_seconds: int | None = None
+    weight_kg: float | None = None
+    rest_seconds: int | None = None
 
 
 class PlanExerciseResponse(BaseModel):
@@ -48,6 +72,7 @@ class PlanExerciseResponse(BaseModel):
     duration_seconds: int | None
     rest_seconds: int | None
     weight_kg: float | None = None
+    set_prescriptions: list[SetPrescriptionResponse] = Field(default_factory=list)
 
 
 class PlanDayResponse(BaseModel):
@@ -90,6 +115,8 @@ class TrainerExerciseResponse(BaseModel):
     default_duration_seconds: int | None = None
     default_rest_seconds: int
     default_weight_kg: float | None = None
+    load_scheme: LoadScheme = "flat"
+    scheme_steps: list[float] = Field(default_factory=list)
     is_active: bool
     video_url: str | None = None
     created_at: datetime

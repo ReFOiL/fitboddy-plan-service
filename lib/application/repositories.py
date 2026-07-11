@@ -1,13 +1,101 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from application.models import PlanDayModel, PlanExerciseModel, TrainerExerciseModel, TrainingPlanModel
+from application.models import (
+    ClientExerciseLoadModel,
+    PlanDayModel,
+    PlanExerciseModel,
+    TrainerExerciseModel,
+    TrainingPlanModel,
+)
 from application.generation.models import ExerciseCandidate
-from domain.entities import PlanDay, PlanExercise, TrainerExercise, TrainingPlan
+from domain.entities import (
+    ClientExerciseLoad,
+    PlanDay,
+    PlanExercise,
+    PlanSetPrescription,
+    TrainerExercise,
+    TrainingPlan,
+)
+
+
+def _parse_scheme_steps(raw: str | None) -> list[float]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    steps: list[float] = []
+    for item in parsed:
+        try:
+            value = float(item)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            steps.append(value)
+    return steps
+
+
+def _dumps_scheme_steps(steps: list[float]) -> str | None:
+    if not steps:
+        return None
+    return json.dumps(steps)
+
+
+def _parse_set_prescriptions(raw: str | None) -> list[PlanSetPrescription]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    result: list[PlanSetPrescription] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        try:
+            set_index = int(item.get("set_index", 0))
+        except (TypeError, ValueError):
+            continue
+        if set_index < 1:
+            continue
+        result.append(
+            PlanSetPrescription(
+                set_index=set_index,
+                reps=item.get("reps"),
+                duration_seconds=item.get("duration_seconds"),
+                weight_kg=item.get("weight_kg"),
+                rest_seconds=item.get("rest_seconds"),
+            )
+        )
+    return sorted(result, key=lambda row: row.set_index)
+
+
+def _dumps_set_prescriptions(prescriptions: list[PlanSetPrescription] | tuple) -> str | None:
+    if not prescriptions:
+        return None
+    payload = [
+        {
+            "set_index": item.set_index,
+            "reps": item.reps,
+            "duration_seconds": item.duration_seconds,
+            "weight_kg": item.weight_kg,
+            "rest_seconds": item.rest_seconds,
+        }
+        for item in prescriptions
+    ]
+    return json.dumps(payload)
 
 
 class TrainingPlanRepository:
@@ -30,21 +118,13 @@ class TrainingPlanRepository:
         return model
 
     def replace_active(self, user_id: str) -> None:
-        statement = (
-            select(TrainingPlanModel)
-            .where(TrainingPlanModel.user_id == user_id, TrainingPlanModel.status == "active")
+        statement = select(TrainingPlanModel).where(
+            TrainingPlanModel.user_id == user_id,
+            TrainingPlanModel.status == "active",
         )
         active = self._session.scalars(statement).all()
         for item in active:
             item.status = "archived"
-        self._session.flush()
-
-    def purge_plan_days(self, plan_id: str) -> None:
-        day_ids_statement = select(PlanDayModel.day_id).where(PlanDayModel.plan_id == plan_id)
-        day_ids = list(self._session.scalars(day_ids_statement).all())
-        if day_ids:
-            self._session.execute(delete(PlanExerciseModel).where(PlanExerciseModel.day_id.in_(day_ids)))
-        self._session.execute(delete(PlanDayModel).where(PlanDayModel.plan_id == plan_id))
         self._session.flush()
 
 
@@ -123,10 +203,64 @@ class TrainerExerciseRepository:
                     default_duration_seconds=item.default_duration_seconds,
                     default_rest_seconds=item.default_rest_seconds,
                     default_weight_kg=item.default_weight_kg,
+                    load_scheme=item.load_scheme,
+                    scheme_steps_json=_dumps_scheme_steps(list(item.scheme_steps)),
                 )
             )
         self._session.flush()
         return self.list_by_trainer(trainer_user_id)
+
+
+class ClientExerciseLoadRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def list_for_client_trainer(self, client_user_id: str, trainer_user_id: str) -> list[ClientExerciseLoadModel]:
+        statement = select(ClientExerciseLoadModel).where(
+            ClientExerciseLoadModel.client_user_id == client_user_id,
+            ClientExerciseLoadModel.trainer_user_id == trainer_user_id,
+        )
+        return list(self._session.scalars(statement).all())
+
+    def find(
+        self,
+        client_user_id: str,
+        trainer_user_id: str,
+        exercise_row_id: str,
+    ) -> ClientExerciseLoadModel | None:
+        statement = select(ClientExerciseLoadModel).where(
+            ClientExerciseLoadModel.client_user_id == client_user_id,
+            ClientExerciseLoadModel.trainer_user_id == trainer_user_id,
+            ClientExerciseLoadModel.exercise_row_id == exercise_row_id,
+        )
+        return self._session.scalar(statement)
+
+    def upsert(
+        self,
+        *,
+        client_user_id: str,
+        trainer_user_id: str,
+        exercise_row_id: str,
+        working_weight_kg: float,
+    ) -> ClientExerciseLoadModel:
+        existing = self.find(client_user_id, trainer_user_id, exercise_row_id)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if existing is None:
+            model = ClientExerciseLoadModel(
+                load_id=str(uuid4()),
+                client_user_id=client_user_id,
+                trainer_user_id=trainer_user_id,
+                exercise_row_id=exercise_row_id,
+                working_weight_kg=working_weight_kg,
+                updated_at=now,
+            )
+            self._session.add(model)
+            self._session.flush()
+            return model
+        existing.working_weight_kg = working_weight_kg
+        existing.updated_at = now
+        self._session.flush()
+        return existing
 
 
 class PlanMapper:
@@ -171,6 +305,7 @@ class PlanMapper:
                     duration_seconds=line.duration_seconds,
                     rest_seconds=line.rest_seconds,
                     weight_kg=line.weight_kg,
+                    set_prescriptions=_parse_set_prescriptions(line.set_prescriptions_json),
                 )
                 for line in exercises
             ],
@@ -193,8 +328,29 @@ class PlanMapper:
             default_duration_seconds=exercise.default_duration_seconds,
             default_rest_seconds=exercise.default_rest_seconds,
             default_weight_kg=exercise.default_weight_kg,
+            load_scheme=exercise.load_scheme or "flat",
+            scheme_steps=_parse_scheme_steps(exercise.scheme_steps_json),
             is_active=exercise.is_active,
             video_url=exercise.video_url,
             created_at=exercise.created_at,
             updated_at=exercise.updated_at,
         )
+
+    @staticmethod
+    def client_load_to_domain(model: ClientExerciseLoadModel) -> ClientExerciseLoad:
+        return ClientExerciseLoad(
+            load_id=model.load_id,
+            client_user_id=model.client_user_id,
+            trainer_user_id=model.trainer_user_id,
+            exercise_row_id=model.exercise_row_id,
+            working_weight_kg=model.working_weight_kg,
+            updated_at=model.updated_at,
+        )
+
+    @staticmethod
+    def dumps_set_prescriptions(prescriptions: list | tuple) -> str | None:
+        return _dumps_set_prescriptions(prescriptions)
+
+    @staticmethod
+    def dumps_scheme_steps(steps: list[float]) -> str | None:
+        return _dumps_scheme_steps(steps)

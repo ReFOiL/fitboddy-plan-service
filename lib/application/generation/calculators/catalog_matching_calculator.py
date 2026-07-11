@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from application.generation.contracts import AbstractMatchingCalculator
 from application.generation.models import ExerciseCandidate, PlanGenerationInput
-from domain.value_objects import EquipmentName, TrainingGoal, WorkoutLocation
+from domain.equipment import equipment_match_key
+from domain.value_objects import TrainingGoal
 
 
 class CatalogMatchingCalculator(AbstractMatchingCalculator):
@@ -22,12 +23,10 @@ class CatalogMatchingCalculator(AbstractMatchingCalculator):
 
     @staticmethod
     def _is_eligible(exercise: ExerciseCandidate, request: PlanGenerationInput) -> bool:
-        equipment = EquipmentName.from_raw(exercise.equipment) or EquipmentName.NONE
-        if equipment not in request.equipment:
+        available = {equipment_match_key(item) for item in request.available_equipment}
+        if equipment_match_key(exercise.equipment) not in available:
             return False
         if exercise.difficulty > int(request.level):
-            return False
-        if request.workout_location == WorkoutLocation.HOME and equipment == EquipmentName.BARBELL:
             return False
         return True
 
@@ -38,9 +37,8 @@ class CatalogMatchingCalculator(AbstractMatchingCalculator):
             score += 8
         if request.goal in {TrainingGoal.MUSCLE_GAIN, TrainingGoal.MAINTENANCE} and not exercise.is_cardio:
             score += 5
-        equipment = EquipmentName.from_raw(exercise.equipment) or EquipmentName.NONE
-        if request.workout_location == WorkoutLocation.HOME and equipment in {EquipmentName.NONE, EquipmentName.DUMBBELLS}:
-            score += 3
+        if equipment_match_key(exercise.equipment) == "none":
+            score += 2
         return score
 
     def _pick_with_novelty_control(
