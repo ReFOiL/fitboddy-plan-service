@@ -71,7 +71,6 @@ class TrainingPlanResponse(BaseModel):
 class TrainerExerciseResponse(BaseModel):
     row_id: str
     trainer_user_id: str
-    exercise_id: str
     exercise_name: str
     description: str | None = None
     equipment: str
@@ -86,5 +85,5 @@ class TrainerExerciseResponse(BaseModel):
 
 class ExerciseVideoUploadResponse(BaseModel):
     trainer_user_id: str
-    exercise_id: str
+    row_id: str
     video_url: str

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from application.db import Base
@@ -76,11 +76,9 @@ class PlanExerciseModel(Base):
 
 class TrainerExerciseModel(Base):
     __tablename__ = "trainer_exercises"
-    __table_args__ = (UniqueConstraint("trainer_user_id", "exercise_id", name="uq_trainer_exercise_pair"),)
 
     row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     trainer_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    exercise_id: Mapped[str] = mapped_column(String(64), nullable=False)
     exercise_name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     equipment: Mapped[str] = mapped_column(String(32), nullable=False, default="none")

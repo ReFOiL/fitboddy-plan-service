@@ -4,7 +4,6 @@ from datetime import date
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
 
 from application.generation import GenerationOrchestrator, PlanGenerationInput, SeedCatalogProvider
 from application.gateways import ProfileGateway
@@ -17,7 +16,7 @@ from application.commands import (
     ListTrainerExercisesCommand,
     UpdateTrainerExerciseCommand,
 )
-from application.errors import ConflictError, PlanNotFoundError, TrainerExerciseNotFoundError, ValidationError
+from application.errors import PlanNotFoundError, TrainerExerciseNotFoundError, ValidationError
 from application.models import PlanDayModel, PlanExerciseModel, TrainerExerciseModel, TrainingPlanModel
 from application.repositories import (
     PlanDayRepository,
@@ -152,13 +151,9 @@ class PlanService:
 
     def add_trainer_exercise(self, command: AddTrainerExerciseCommand) -> TrainerExercise:
         self._validate_exercise_fields(command.equipment, command.difficulty, command.workout_category)
-        existing = self._trainer_exercises.find_by_trainer_and_exercise_id(command.trainer_user_id, command.exercise_id)
-        if existing is not None:
-            raise ConflictError("exercise_id already exists for trainer")
         model = TrainerExerciseModel(
             row_id=str(uuid4()),
             trainer_user_id=command.trainer_user_id,
-            exercise_id=command.exercise_id,
             exercise_name=command.exercise_name.strip(),
             description=(command.description.strip() if command.description and command.description.strip() else None),
             equipment=command.equipment.strip().lower(),
@@ -169,17 +164,13 @@ class PlanService:
             video_url=None,
         )
         self._trainer_exercises.add(model)
-        try:
-            self._session.commit()
-        except IntegrityError as exc:
-            self._session.rollback()
-            raise ConflictError("exercise_id already exists for trainer") from exc
+        self._session.commit()
         self._session.refresh(model)
         return self._mapper.trainer_exercise_to_domain(model)
 
     def update_trainer_exercise(self, command: UpdateTrainerExerciseCommand) -> TrainerExercise:
         self._validate_exercise_fields(command.equipment, command.difficulty, command.workout_category)
-        model = self._trainer_exercises.find_by_trainer_and_exercise_id(command.trainer_user_id, command.exercise_id)
+        model = self._trainer_exercises.find_by_trainer_and_row_id(command.trainer_user_id, command.row_id)
         if model is None:
             raise TrainerExerciseNotFoundError("trainer exercise not found")
         model.exercise_name = command.exercise_name.strip()
@@ -194,14 +185,14 @@ class PlanService:
         self._session.refresh(model)
         return self._mapper.trainer_exercise_to_domain(model)
 
-    def get_trainer_exercise(self, trainer_user_id: str, exercise_id: str) -> TrainerExercise:
-        model = self._trainer_exercises.find_by_trainer_and_exercise_id(trainer_user_id, exercise_id)
+    def get_trainer_exercise(self, trainer_user_id: str, row_id: str) -> TrainerExercise:
+        model = self._trainer_exercises.find_by_trainer_and_row_id(trainer_user_id, row_id)
         if model is None:
             raise TrainerExerciseNotFoundError("trainer exercise not found")
         return self._mapper.trainer_exercise_to_domain(model)
 
     def archive_trainer_exercise(self, command: ArchiveTrainerExerciseCommand) -> None:
-        model = self._trainer_exercises.find_by_trainer_and_exercise_id(command.trainer_user_id, command.exercise_id)
+        model = self._trainer_exercises.find_by_trainer_and_row_id(command.trainer_user_id, command.row_id)
         if model is None:
             raise TrainerExerciseNotFoundError("trainer exercise not found")
         if not model.is_active:
@@ -212,10 +203,10 @@ class PlanService:
     def set_trainer_exercise_video_url(
         self,
         trainer_user_id: str,
-        exercise_id: str,
+        row_id: str,
         video_url: str,
     ) -> tuple[TrainerExercise, str | None]:
-        model = self._trainer_exercises.find_by_trainer_and_exercise_id(trainer_user_id, exercise_id)
+        model = self._trainer_exercises.find_by_trainer_and_row_id(trainer_user_id, row_id)
         if model is None:
             raise TrainerExerciseNotFoundError("trainer exercise not found")
         previous_video_url = model.video_url
@@ -224,8 +215,8 @@ class PlanService:
         self._session.refresh(model)
         return self._mapper.trainer_exercise_to_domain(model), previous_video_url
 
-    def clear_trainer_exercise_video_url(self, trainer_user_id: str, exercise_id: str) -> tuple[TrainerExercise, str | None]:
-        model = self._trainer_exercises.find_by_trainer_and_exercise_id(trainer_user_id, exercise_id)
+    def clear_trainer_exercise_video_url(self, trainer_user_id: str, row_id: str) -> tuple[TrainerExercise, str | None]:
+        model = self._trainer_exercises.find_by_trainer_and_row_id(trainer_user_id, row_id)
         if model is None:
             raise TrainerExerciseNotFoundError("trainer exercise not found")
         previous_video_url = model.video_url

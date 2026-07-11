@@ -39,39 +39,39 @@ class PlanRoutes:
             response_model=list[TrainerExerciseResponse],
         )
         self.router.add_api_route(
-            "/trainers/{trainer_user_id}/exercises/{exercise_id}",
+            "/trainers/{trainer_user_id}/exercises",
             self.add_trainer_exercise,
             methods=["POST"],
             status_code=status.HTTP_201_CREATED,
             response_model=TrainerExerciseResponse,
         )
         self.router.add_api_route(
-            "/trainers/{trainer_user_id}/exercises/{exercise_id}",
+            "/trainers/{trainer_user_id}/exercises/{row_id}",
             self.get_trainer_exercise,
             methods=["GET"],
             response_model=TrainerExerciseResponse,
         )
         self.router.add_api_route(
-            "/trainers/{trainer_user_id}/exercises/{exercise_id}",
+            "/trainers/{trainer_user_id}/exercises/{row_id}",
             self.update_trainer_exercise,
             methods=["PUT"],
             response_model=TrainerExerciseResponse,
         )
         self.router.add_api_route(
-            "/trainers/{trainer_user_id}/exercises/{exercise_id}/archive",
+            "/trainers/{trainer_user_id}/exercises/{row_id}/archive",
             self.archive_trainer_exercise,
             methods=["POST"],
             status_code=status.HTTP_204_NO_CONTENT,
             response_class=Response,
         )
         self.router.add_api_route(
-            "/trainers/{trainer_user_id}/exercises/{exercise_id}/video",
+            "/trainers/{trainer_user_id}/exercises/{row_id}/video",
             self.upload_trainer_exercise_video,
             methods=["POST"],
             response_model=ExerciseVideoUploadResponse,
         )
         self.router.add_api_route(
-            "/trainers/{trainer_user_id}/exercises/{exercise_id}/video",
+            "/trainers/{trainer_user_id}/exercises/{row_id}/video",
             self.delete_trainer_exercise_video,
             methods=["DELETE"],
             status_code=status.HTTP_204_NO_CONTENT,
@@ -107,47 +107,46 @@ class PlanRoutes:
     def add_trainer_exercise(
         request: Request,
         trainer_user_id: str,
-        exercise_id: str,
         payload: UpsertTrainerExerciseRequest,
     ) -> TrainerExerciseResponse:
-        return request.app.state.plan_handler.add_trainer_exercise(trainer_user_id, exercise_id, payload)
+        return request.app.state.plan_handler.add_trainer_exercise(trainer_user_id, payload)
 
     @staticmethod
-    def get_trainer_exercise(request: Request, trainer_user_id: str, exercise_id: str) -> TrainerExerciseResponse:
-        return request.app.state.plan_handler.get_trainer_exercise(trainer_user_id, exercise_id)
+    def get_trainer_exercise(request: Request, trainer_user_id: str, row_id: str) -> TrainerExerciseResponse:
+        return request.app.state.plan_handler.get_trainer_exercise(trainer_user_id, row_id)
 
     @staticmethod
     def update_trainer_exercise(
         request: Request,
         trainer_user_id: str,
-        exercise_id: str,
+        row_id: str,
         payload: UpsertTrainerExerciseRequest,
     ) -> TrainerExerciseResponse:
-        return request.app.state.plan_handler.update_trainer_exercise(trainer_user_id, exercise_id, payload)
+        return request.app.state.plan_handler.update_trainer_exercise(trainer_user_id, row_id, payload)
 
     @staticmethod
-    def archive_trainer_exercise(request: Request, trainer_user_id: str, exercise_id: str) -> Response:
-        request.app.state.plan_handler.archive_trainer_exercise(trainer_user_id, exercise_id)
+    def archive_trainer_exercise(request: Request, trainer_user_id: str, row_id: str) -> Response:
+        request.app.state.plan_handler.archive_trainer_exercise(trainer_user_id, row_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @staticmethod
     async def upload_trainer_exercise_video(
         request: Request,
         trainer_user_id: str,
-        exercise_id: str,
+        row_id: str,
         file: UploadFile = File(...),
     ) -> ExerciseVideoUploadResponse:
         data = await file.read()
         return await request.app.state.plan_handler.upload_trainer_exercise_video(
             trainer_user_id,
-            exercise_id,
+            row_id,
             file.filename or "video.mp4",
             data,
         )
 
     @staticmethod
-    async def delete_trainer_exercise_video(request: Request, trainer_user_id: str, exercise_id: str) -> Response:
-        await request.app.state.plan_handler.delete_trainer_exercise_video(trainer_user_id, exercise_id)
+    async def delete_trainer_exercise_video(request: Request, trainer_user_id: str, row_id: str) -> Response:
+        await request.app.state.plan_handler.delete_trainer_exercise_video(trainer_user_id, row_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @staticmethod

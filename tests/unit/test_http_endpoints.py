@@ -79,7 +79,6 @@ def test_plan_keeps_trainer_binding() -> None:
 
 def test_trainer_catalog_crud() -> None:
     trainer_user_id = "trainer_catalog_1"
-    exercise_id = "custom_split_squat"
     create_payload = {
         "exercise_name": "Bulgarian Split Squat",
         "description": "Keep torso upright and control the descent.",
@@ -90,21 +89,23 @@ def test_trainer_catalog_crud() -> None:
     }
     with _client() as client:
         created = client.post(
-            f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}",
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
             json=create_payload,
         )
         assert created.status_code == 201
-        assert created.json()["exercise_id"] == exercise_id
+        row_id = created.json()["row_id"]
+        assert row_id
         assert created.json()["is_active"] is True
         assert created.json()["description"] == "Keep torso upright and control the descent."
+        assert "exercise_id" not in created.json()
 
-        detail = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}")
+        detail = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}")
         assert detail.status_code == 200
         assert detail.json()["description"] == "Keep torso upright and control the descent."
 
         listed = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises")
         assert listed.status_code == 200
-        assert any(item["exercise_id"] == exercise_id for item in listed.json())
+        assert any(item["row_id"] == row_id for item in listed.json())
 
         update_payload = {
             "exercise_name": "Bulgarian Split Squat Paused",
@@ -115,7 +116,7 @@ def test_trainer_catalog_crud() -> None:
             "workout_category": "lower",
         }
         updated = client.put(
-            f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}",
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}",
             json=update_payload,
         )
         assert updated.status_code == 200
@@ -123,22 +124,21 @@ def test_trainer_catalog_crud() -> None:
         assert updated.json()["difficulty"] == 4
         assert updated.json()["description"] == "Pause 1 second at the bottom."
 
-        archived = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}/archive")
+        archived = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/archive")
         assert archived.status_code == 204
 
         listed_active = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises")
         assert listed_active.status_code == 200
-        assert all(item["exercise_id"] != exercise_id for item in listed_active.json())
+        assert all(item["row_id"] != row_id for item in listed_active.json())
 
         listed_all = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises?include_archived=true")
         assert listed_all.status_code == 200
-        archived_item = next(item for item in listed_all.json() if item["exercise_id"] == exercise_id)
+        archived_item = next(item for item in listed_all.json() if item["row_id"] == row_id)
         assert archived_item["is_active"] is False
 
 
 def test_exercise_video_upload_requires_s3_configuration() -> None:
     trainer_user_id = "trainer_video_1"
-    exercise_id = "video_squat"
     payload = {
         "exercise_name": "Video Squat",
         "equipment": "none",
@@ -147,10 +147,11 @@ def test_exercise_video_upload_requires_s3_configuration() -> None:
         "workout_category": "lower",
     }
     with _client() as client:
-        created = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}", json=payload)
+        created = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
         assert created.status_code == 201
+        row_id = created.json()["row_id"]
         response = client.post(
-            f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}/video",
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/video",
             files={"file": ("demo.mp4", b"fake-video-bytes", "video/mp4")},
         )
         assert response.status_code == 503
@@ -161,23 +162,23 @@ def test_exercise_video_upload_and_delete_success() -> None:
     class _FakeStorage:
         def __init__(self) -> None:
             self.deleted: list[str] = []
+            self.expected_row_id: str | None = None
 
-        async def upload_video(self, *, trainer_user_id: str, exercise_id: str, filename: str, data: bytes) -> str:
+        async def upload_video(self, *, trainer_user_id: str, row_id: str, filename: str, data: bytes) -> str:
             assert trainer_user_id == "trainer_video_2"
-            assert exercise_id == "video_pushup"
+            assert row_id == self.expected_row_id
             assert filename == "demo.mp4"
             assert data
-            return f"videos/{trainer_user_id}/{exercise_id}/fake.mp4"
+            return f"videos/{trainer_user_id}/{row_id}/fake.mp4"
 
         async def delete_media(self, object_name: str) -> None:
             self.deleted.append(object_name)
 
         async def download_media(self, object_name: str) -> tuple[bytes, str]:
-            assert object_name == "videos/trainer_video_2/video_pushup/fake.mp4"
+            assert object_name == f"videos/trainer_video_2/{self.expected_row_id}/fake.mp4"
             return b"video-bytes", "video/mp4"
 
     trainer_user_id = "trainer_video_2"
-    exercise_id = "video_pushup"
     payload = {
         "exercise_name": "Video Pushup",
         "equipment": "none",
@@ -186,24 +187,27 @@ def test_exercise_video_upload_and_delete_success() -> None:
         "workout_category": "upper",
     }
     with _client() as client:
-        created = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}", json=payload)
+        created = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
         assert created.status_code == 201
+        row_id = created.json()["row_id"]
         assert created.json().get("video_url") is None
 
         fake_storage = _FakeStorage()
+        fake_storage.expected_row_id = row_id
         app.state.plan_handler._runtime._video_storage = fake_storage
 
         uploaded = client.post(
-            f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}/video",
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/video",
             files={"file": ("demo.mp4", b"fake-video-bytes", "video/mp4")},
         )
         assert uploaded.status_code == 200
         video_url = uploaded.json()["video_url"]
-        assert video_url == "/api/v1/trainers/media/videos/trainer_video_2/video_pushup/fake.mp4"
+        assert video_url == f"/api/v1/trainers/media/videos/trainer_video_2/{row_id}/fake.mp4"
+        assert uploaded.json()["row_id"] == row_id
 
         listed = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises")
         assert listed.status_code == 200
-        item = next(row for row in listed.json() if row["exercise_id"] == exercise_id)
+        item = next(row for row in listed.json() if row["row_id"] == row_id)
         assert item["video_url"] == video_url
 
         media = client.get(video_url)
@@ -211,18 +215,17 @@ def test_exercise_video_upload_and_delete_success() -> None:
         assert media.content == b"video-bytes"
         assert media.headers["content-type"].startswith("video/mp4")
 
-        deleted = client.delete(f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}/video")
+        deleted = client.delete(f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/video")
         assert deleted.status_code == 204
-        assert fake_storage.deleted == ["videos/trainer_video_2/video_pushup/fake.mp4"]
+        assert fake_storage.deleted == [f"videos/trainer_video_2/{row_id}/fake.mp4"]
 
         listed_after = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises")
-        item_after = next(row for row in listed_after.json() if row["exercise_id"] == exercise_id)
+        item_after = next(row for row in listed_after.json() if row["row_id"] == row_id)
         assert item_after["video_url"] is None
 
 
-def test_trainer_catalog_rejects_duplicate_exercise_id() -> None:
+def test_trainer_catalog_allows_same_name_twice() -> None:
     trainer_user_id = "trainer_catalog_2"
-    exercise_id = "custom_deadlift"
     payload = {
         "exercise_name": "Dumbbell Deadlift",
         "equipment": "dumbbells",
@@ -231,15 +234,15 @@ def test_trainer_catalog_rejects_duplicate_exercise_id() -> None:
         "workout_category": "full_body",
     }
     with _client() as client:
-        first = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}", json=payload)
-        second = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}", json=payload)
+        first = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
+        second = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
         assert first.status_code == 201
-        assert second.status_code == 409
+        assert second.status_code == 201
+        assert first.json()["row_id"] != second.json()["row_id"]
 
 
 def test_trainer_catalog_rejects_cardio_workout_category() -> None:
     trainer_user_id = "trainer_catalog_3"
-    exercise_id = "cardio_cat_test"
     payload = {
         "exercise_name": "Cardio category should be rejected",
         "equipment": "none",
@@ -248,7 +251,7 @@ def test_trainer_catalog_rejects_cardio_workout_category() -> None:
         "workout_category": "cardio",
     }
     with _client() as client:
-        response = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises/{exercise_id}", json=payload)
+        response = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
         assert response.status_code == 422
 
 
@@ -259,7 +262,8 @@ def test_trainer_catalog_auto_seeds_baseline_for_new_trainer() -> None:
         assert listed.status_code == 200
         body = listed.json()
         assert len(body) > 0
-        assert any(item["exercise_id"] == "pushups" for item in body)
+        assert any(item["exercise_name"] == "Отжимания" for item in body)
+        assert all("row_id" in item and "exercise_id" not in item for item in body)
 
 
 def test_generate_plan_requires_completed_questionnaire_when_guard_enabled() -> None:

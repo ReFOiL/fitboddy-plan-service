@@ -47,7 +47,6 @@ class TrainingPlan:
 class TrainerExercise:
     row_id: str
     trainer_user_id: str
-    exercise_id: str
     exercise_name: str
     description: str | None
     equipment: str

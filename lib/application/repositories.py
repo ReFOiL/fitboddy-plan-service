@@ -86,14 +86,14 @@ class TrainerExerciseRepository:
         statement = statement.order_by(TrainerExerciseModel.exercise_name.asc())
         return list(self._session.scalars(statement).all())
 
-    def find_by_trainer_and_exercise_id(
+    def find_by_trainer_and_row_id(
         self,
         trainer_user_id: str,
-        exercise_id: str,
+        row_id: str,
     ) -> TrainerExerciseModel | None:
         statement = select(TrainerExerciseModel).where(
             TrainerExerciseModel.trainer_user_id == trainer_user_id,
-            TrainerExerciseModel.exercise_id == exercise_id,
+            TrainerExerciseModel.row_id == row_id,
         )
         return self._session.scalar(statement)
 
@@ -111,7 +111,6 @@ class TrainerExerciseRepository:
                 TrainerExerciseModel(
                     row_id=str(uuid4()),
                     trainer_user_id=trainer_user_id,
-                    exercise_id=item.exercise_id,
                     exercise_name=item.name,
                     description=None,
                     equipment=item.equipment,
@@ -175,7 +174,6 @@ class PlanMapper:
         return TrainerExercise(
             row_id=exercise.row_id,
             trainer_user_id=exercise.trainer_user_id,
-            exercise_id=exercise.exercise_id,
             exercise_name=exercise.exercise_name,
             description=exercise.description,
             equipment=exercise.equipment,

@@ -45,12 +45,10 @@ class PlanRequestFactory:
     @staticmethod
     def to_add_trainer_exercise_command(
         trainer_user_id: str,
-        exercise_id: str,
         payload: UpsertTrainerExerciseRequest,
     ) -> AddTrainerExerciseCommand:
         return AddTrainerExerciseCommand(
             trainer_user_id=trainer_user_id,
-            exercise_id=exercise_id,
             exercise_name=payload.exercise_name,
             description=payload.description,
             equipment=payload.equipment,
@@ -62,12 +60,12 @@ class PlanRequestFactory:
     @staticmethod
     def to_update_trainer_exercise_command(
         trainer_user_id: str,
-        exercise_id: str,
+        row_id: str,
         payload: UpsertTrainerExerciseRequest,
     ) -> UpdateTrainerExerciseCommand:
         return UpdateTrainerExerciseCommand(
             trainer_user_id=trainer_user_id,
-            exercise_id=exercise_id,
+            row_id=row_id,
             exercise_name=payload.exercise_name,
             description=payload.description,
             equipment=payload.equipment,
@@ -79,9 +77,9 @@ class PlanRequestFactory:
     @staticmethod
     def to_archive_trainer_exercise_command(
         trainer_user_id: str,
-        exercise_id: str,
+        row_id: str,
     ) -> ArchiveTrainerExerciseCommand:
         return ArchiveTrainerExerciseCommand(
             trainer_user_id=trainer_user_id,
-            exercise_id=exercise_id,
+            row_id=row_id,
         )

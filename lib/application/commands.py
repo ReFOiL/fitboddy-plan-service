@@ -34,7 +34,6 @@ class ListTrainerExercisesCommand:
 @dataclass(frozen=True)
 class AddTrainerExerciseCommand:
     trainer_user_id: str
-    exercise_id: str
     exercise_name: str
     description: str | None
     equipment: str
@@ -46,7 +45,7 @@ class AddTrainerExerciseCommand:
 @dataclass(frozen=True)
 class UpdateTrainerExerciseCommand:
     trainer_user_id: str
-    exercise_id: str
+    row_id: str
     exercise_name: str
     description: str | None
     equipment: str
@@ -58,4 +57,4 @@ class UpdateTrainerExerciseCommand:
 @dataclass(frozen=True)
 class ArchiveTrainerExerciseCommand:
     trainer_user_id: str
-    exercise_id: str
+    row_id: str

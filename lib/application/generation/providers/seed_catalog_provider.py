@@ -12,7 +12,8 @@ class SeedCatalogProvider(AbstractCatalogProvider):
 
     def list_exercises(self, request: PlanGenerationInput) -> list[ExerciseCandidate]:
         _ = request
-        # Имена — для пользователя по-русски; exercise_id и equipment — стабильные коды для API/генератора.
+        # Имена — для пользователя по-русски; equipment — стабильные коды.
+        # exercise_id здесь только временный ключ сида; в каталог тренера попадёт row_id.
         return [
             ExerciseCandidate("pushups", "Отжимания", "none", False, 2, "upper"),
             ExerciseCandidate("incline_pushups", "Отжимания с ногами на возвышении", "none", False, 1, "upper"),

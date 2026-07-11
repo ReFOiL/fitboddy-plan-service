@@ -28,7 +28,7 @@ class TrainerCatalogProvider(AbstractCatalogProvider):
 
         return [
             ExerciseCandidate(
-                exercise_id=item.exercise_id,
+                exercise_id=item.row_id,
                 name=item.exercise_name,
                 equipment=item.equipment,
                 is_cardio=item.is_cardio,

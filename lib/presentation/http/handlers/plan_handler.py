@@ -81,23 +81,22 @@ class PlanHttpHandler:
     def add_trainer_exercise(
         self,
         trainer_user_id: str,
-        exercise_id: str,
         payload: UpsertTrainerExerciseRequest,
     ) -> TrainerExerciseResponse:
         try:
             with self._runtime.plan_service_scope() as plan_service:
                 item = plan_service.add_trainer_exercise(
-                    self._request_factory.to_add_trainer_exercise_command(trainer_user_id, exercise_id, payload)
+                    self._request_factory.to_add_trainer_exercise_command(trainer_user_id, payload)
                 )
                 return TrainerExerciseResponse.model_validate(item, from_attributes=True)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
-    def get_trainer_exercise(self, trainer_user_id: str, exercise_id: str) -> TrainerExerciseResponse:
+    def get_trainer_exercise(self, trainer_user_id: str, row_id: str) -> TrainerExerciseResponse:
         try:
             with self._runtime.plan_service_scope() as plan_service:
-                item = plan_service.get_trainer_exercise(trainer_user_id, exercise_id)
+                item = plan_service.get_trainer_exercise(trainer_user_id, row_id)
                 return TrainerExerciseResponse.model_validate(item, from_attributes=True)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
@@ -106,24 +105,24 @@ class PlanHttpHandler:
     def update_trainer_exercise(
         self,
         trainer_user_id: str,
-        exercise_id: str,
+        row_id: str,
         payload: UpsertTrainerExerciseRequest,
     ) -> TrainerExerciseResponse:
         try:
             with self._runtime.plan_service_scope() as plan_service:
                 item = plan_service.update_trainer_exercise(
-                    self._request_factory.to_update_trainer_exercise_command(trainer_user_id, exercise_id, payload)
+                    self._request_factory.to_update_trainer_exercise_command(trainer_user_id, row_id, payload)
                 )
                 return TrainerExerciseResponse.model_validate(item, from_attributes=True)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
-    def archive_trainer_exercise(self, trainer_user_id: str, exercise_id: str) -> None:
+    def archive_trainer_exercise(self, trainer_user_id: str, row_id: str) -> None:
         try:
             with self._runtime.plan_service_scope() as plan_service:
                 plan_service.archive_trainer_exercise(
-                    self._request_factory.to_archive_trainer_exercise_command(trainer_user_id, exercise_id)
+                    self._request_factory.to_archive_trainer_exercise_command(trainer_user_id, row_id)
                 )
                 return
         except PlanError as exc:
@@ -133,7 +132,7 @@ class PlanHttpHandler:
     async def upload_trainer_exercise_video(
         self,
         trainer_user_id: str,
-        exercise_id: str,
+        row_id: str,
         filename: str,
         data: bytes,
     ) -> ExerciseVideoUploadResponse:
@@ -143,7 +142,7 @@ class PlanHttpHandler:
                 raise IntegrationError("s3 media storage is not configured")
             object_key = await storage.upload_video(
                 trainer_user_id=trainer_user_id,
-                exercise_id=exercise_id,
+                row_id=row_id,
                 filename=filename,
                 data=data,
             )
@@ -151,7 +150,7 @@ class PlanHttpHandler:
             with self._runtime.plan_service_scope() as plan_service:
                 _, previous_video_url = plan_service.set_trainer_exercise_video_url(
                     trainer_user_id,
-                    exercise_id,
+                    row_id,
                     video_url,
                 )
             previous_object_key = self._extract_object_key(previous_video_url)
@@ -162,7 +161,7 @@ class PlanHttpHandler:
                     pass
             return ExerciseVideoUploadResponse(
                 trainer_user_id=trainer_user_id,
-                exercise_id=exercise_id,
+                row_id=row_id,
                 video_url=video_url,
             )
         except MediaValidationError as exc:
@@ -171,11 +170,11 @@ class PlanHttpHandler:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
-    async def delete_trainer_exercise_video(self, trainer_user_id: str, exercise_id: str) -> None:
+    async def delete_trainer_exercise_video(self, trainer_user_id: str, row_id: str) -> None:
         try:
             storage = self._runtime.video_storage
             with self._runtime.plan_service_scope() as plan_service:
-                _, previous_video_url = plan_service.clear_trainer_exercise_video_url(trainer_user_id, exercise_id)
+                _, previous_video_url = plan_service.clear_trainer_exercise_video_url(trainer_user_id, row_id)
             object_key = self._extract_object_key(previous_video_url)
             if object_key and storage is not None:
                 try:
