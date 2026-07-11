@@ -85,13 +85,13 @@ class PlanRoutes:
             methods=["GET"],
         )
         self.router.add_api_route(
-            "/clients/{client_user_id}/trainers/{trainer_user_id}/loads",
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/loads",
             self.list_client_loads,
             methods=["GET"],
             response_model=list[ClientExerciseLoadResponse],
         )
         self.router.add_api_route(
-            "/clients/{client_user_id}/trainers/{trainer_user_id}/loads/{exercise_row_id}",
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/loads/{exercise_row_id}",
             self.upsert_client_load,
             methods=["PUT"],
             response_model=ClientExerciseLoadResponse,

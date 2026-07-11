@@ -317,13 +317,13 @@ def test_client_loads_and_scheme_affect_generated_plan() -> None:
         assert created.json()["load_scheme"] == "ascending"
 
         load = client.put(
-            f"/api/v1/clients/{client_user_id}/trainers/{trainer_user_id}/loads/{row_id}",
+            f"/api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/loads/{row_id}",
             json={"working_weight_kg": 100},
         )
         assert load.status_code == 200
         assert load.json()["working_weight_kg"] == 100
 
-        listed_loads = client.get(f"/api/v1/clients/{client_user_id}/trainers/{trainer_user_id}/loads")
+        listed_loads = client.get(f"/api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/loads")
         assert listed_loads.status_code == 200
         assert any(item["exercise_row_id"] == row_id for item in listed_loads.json())
 
