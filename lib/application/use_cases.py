@@ -121,6 +121,7 @@ class PlanService:
                         reps=line.reps,
                         duration_seconds=line.duration_seconds,
                         rest_seconds=line.rest_seconds,
+                        weight_kg=line.weight_kg,
                     )
                 )
         self._session.commit()
@@ -150,7 +151,25 @@ class PlanService:
         return [self._mapper.trainer_exercise_to_domain(item) for item in rows]
 
     def add_trainer_exercise(self, command: AddTrainerExerciseCommand) -> TrainerExercise:
-        self._validate_exercise_fields(command.equipment, command.difficulty, command.workout_category)
+        self._validate_exercise_fields(
+            command.equipment,
+            command.difficulty,
+            command.workout_category,
+            command.is_hold,
+            command.default_sets,
+            command.default_reps,
+            command.default_duration_seconds,
+            command.default_rest_seconds,
+            command.default_weight_kg,
+        )
+        sets, reps, duration, rest, weight = self._normalize_baseline(
+            command.is_hold,
+            command.default_sets,
+            command.default_reps,
+            command.default_duration_seconds,
+            command.default_rest_seconds,
+            command.default_weight_kg,
+        )
         model = TrainerExerciseModel(
             row_id=str(uuid4()),
             trainer_user_id=command.trainer_user_id,
@@ -158,8 +177,14 @@ class PlanService:
             description=(command.description.strip() if command.description and command.description.strip() else None),
             equipment=command.equipment.strip().lower(),
             is_cardio=command.is_cardio,
+            is_hold=command.is_hold,
             difficulty=command.difficulty,
             workout_category=command.workout_category.strip().lower(),
+            default_sets=sets,
+            default_reps=reps,
+            default_duration_seconds=duration,
+            default_rest_seconds=rest,
+            default_weight_kg=weight,
             is_active=True,
             video_url=None,
         )
@@ -169,16 +194,40 @@ class PlanService:
         return self._mapper.trainer_exercise_to_domain(model)
 
     def update_trainer_exercise(self, command: UpdateTrainerExerciseCommand) -> TrainerExercise:
-        self._validate_exercise_fields(command.equipment, command.difficulty, command.workout_category)
+        self._validate_exercise_fields(
+            command.equipment,
+            command.difficulty,
+            command.workout_category,
+            command.is_hold,
+            command.default_sets,
+            command.default_reps,
+            command.default_duration_seconds,
+            command.default_rest_seconds,
+            command.default_weight_kg,
+        )
         model = self._trainer_exercises.find_by_trainer_and_row_id(command.trainer_user_id, command.row_id)
         if model is None:
             raise TrainerExerciseNotFoundError("trainer exercise not found")
+        sets, reps, duration, rest, weight = self._normalize_baseline(
+            command.is_hold,
+            command.default_sets,
+            command.default_reps,
+            command.default_duration_seconds,
+            command.default_rest_seconds,
+            command.default_weight_kg,
+        )
         model.exercise_name = command.exercise_name.strip()
         model.description = command.description.strip() if command.description and command.description.strip() else None
         model.equipment = command.equipment.strip().lower()
         model.is_cardio = command.is_cardio
+        model.is_hold = command.is_hold
         model.difficulty = command.difficulty
         model.workout_category = command.workout_category.strip().lower()
+        model.default_sets = sets
+        model.default_reps = reps
+        model.default_duration_seconds = duration
+        model.default_rest_seconds = rest
+        model.default_weight_kg = weight
         if not model.is_active:
             model.is_active = True
         self._session.commit()
@@ -267,7 +316,17 @@ class PlanService:
         return set(EquipmentName)
 
     @staticmethod
-    def _validate_exercise_fields(equipment: str, difficulty: int, workout_category: str) -> None:
+    def _validate_exercise_fields(
+        equipment: str,
+        difficulty: int,
+        workout_category: str,
+        is_hold: bool,
+        default_sets: int,
+        default_reps: int | None,
+        default_duration_seconds: int | None,
+        default_rest_seconds: int,
+        default_weight_kg: float | None,
+    ) -> None:
         if not equipment.strip():
             raise ValidationError("equipment must not be empty")
         if difficulty < 1 or difficulty > 5:
@@ -277,6 +336,31 @@ class PlanService:
             raise ValidationError("workout_category must not be empty")
         if normalized_category not in PlanService._ALLOWED_WORKOUT_CATEGORIES:
             raise ValidationError("workout_category must be one of: upper, lower, core, full_body")
+        if default_sets < 1 or default_sets > 10:
+            raise ValidationError("default_sets must be between 1 and 10")
+        if default_rest_seconds < 0 or default_rest_seconds > 600:
+            raise ValidationError("default_rest_seconds must be between 0 and 600")
+        if default_weight_kg is not None and default_weight_kg < 0:
+            raise ValidationError("default_weight_kg must be >= 0")
+        if is_hold:
+            if default_duration_seconds is None or default_duration_seconds < 5 or default_duration_seconds > 3600:
+                raise ValidationError("default_duration_seconds must be between 5 and 3600 for timed exercises")
+        elif default_reps is None or default_reps < 1 or default_reps > 100:
+            raise ValidationError("default_reps must be between 1 and 100 for rep-based exercises")
+
+    @staticmethod
+    def _normalize_baseline(
+        is_hold: bool,
+        default_sets: int,
+        default_reps: int | None,
+        default_duration_seconds: int | None,
+        default_rest_seconds: int,
+        default_weight_kg: float | None,
+    ) -> tuple[int, int | None, int | None, int, float | None]:
+        weight = None if default_weight_kg is None else float(default_weight_kg)
+        if is_hold:
+            return default_sets, None, default_duration_seconds, default_rest_seconds, weight
+        return default_sets, default_reps, None, default_rest_seconds, weight
 
     def _ensure_trainer_catalog_baseline(self, trainer_user_id: str) -> None:
         existing = self._trainer_exercises.list_by_trainer(trainer_user_id, include_archived=True)

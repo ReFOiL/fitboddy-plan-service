@@ -84,6 +84,7 @@ def test_trainer_catalog_crud() -> None:
         "description": "Keep torso upright and control the descent.",
         "equipment": "dumbbells",
         "is_cardio": False,
+        "is_hold": False,
         "difficulty": 3,
         "workout_category": "lower",
     }
@@ -111,8 +112,9 @@ def test_trainer_catalog_crud() -> None:
             "exercise_name": "Bulgarian Split Squat Paused",
             "description": "Pause 1 second at the bottom.",
             "equipment": "dumbbells",
-            "is_cardio": False,
-            "difficulty": 4,
+        "is_cardio": False,
+        "is_hold": False,
+        "difficulty": 4,
             "workout_category": "lower",
         }
         updated = client.put(
@@ -143,6 +145,7 @@ def test_exercise_video_upload_requires_s3_configuration() -> None:
         "exercise_name": "Video Squat",
         "equipment": "none",
         "is_cardio": False,
+        "is_hold": False,
         "difficulty": 2,
         "workout_category": "lower",
     }
@@ -183,6 +186,7 @@ def test_exercise_video_upload_and_delete_success() -> None:
         "exercise_name": "Video Pushup",
         "equipment": "none",
         "is_cardio": False,
+        "is_hold": False,
         "difficulty": 2,
         "workout_category": "upper",
     }
@@ -230,6 +234,7 @@ def test_trainer_catalog_allows_same_name_twice() -> None:
         "exercise_name": "Dumbbell Deadlift",
         "equipment": "dumbbells",
         "is_cardio": False,
+        "is_hold": False,
         "difficulty": 3,
         "workout_category": "full_body",
     }
@@ -247,6 +252,7 @@ def test_trainer_catalog_rejects_cardio_workout_category() -> None:
         "exercise_name": "Cardio category should be rejected",
         "equipment": "none",
         "is_cardio": True,
+        "is_hold": False,
         "difficulty": 2,
         "workout_category": "cardio",
     }

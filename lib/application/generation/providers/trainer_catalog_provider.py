@@ -34,6 +34,12 @@ class TrainerCatalogProvider(AbstractCatalogProvider):
                 is_cardio=item.is_cardio,
                 difficulty=item.difficulty,
                 workout_category=item.workout_category,
+                is_hold=item.is_hold,
+                default_sets=item.default_sets,
+                default_reps=item.default_reps,
+                default_duration_seconds=item.default_duration_seconds,
+                default_rest_seconds=item.default_rest_seconds,
+                default_weight_kg=item.default_weight_kg,
             )
             for item in trainer_exercises
         ]

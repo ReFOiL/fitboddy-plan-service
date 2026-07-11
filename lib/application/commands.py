@@ -38,8 +38,14 @@ class AddTrainerExerciseCommand:
     description: str | None
     equipment: str
     is_cardio: bool
+    is_hold: bool
     difficulty: int
     workout_category: str
+    default_sets: int
+    default_reps: int | None
+    default_duration_seconds: int | None
+    default_rest_seconds: int
+    default_weight_kg: float | None
 
 
 @dataclass(frozen=True)
@@ -50,8 +56,14 @@ class UpdateTrainerExerciseCommand:
     description: str | None
     equipment: str
     is_cardio: bool
+    is_hold: bool
     difficulty: int
     workout_category: str
+    default_sets: int
+    default_reps: int | None
+    default_duration_seconds: int | None
+    default_rest_seconds: int
+    default_weight_kg: float | None
 
 
 @dataclass(frozen=True)

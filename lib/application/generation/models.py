@@ -14,6 +14,12 @@ class ExerciseCandidate:
     is_cardio: bool
     difficulty: int
     workout_category: str
+    is_hold: bool = False
+    default_sets: int = 3
+    default_reps: int | None = 10
+    default_duration_seconds: int | None = None
+    default_rest_seconds: int = 60
+    default_weight_kg: float | None = None
 
 
 @dataclass(frozen=True)
@@ -24,6 +30,7 @@ class ExerciseLine:
     reps: int | None
     duration_seconds: int | None
     rest_seconds: int | None
+    weight_kg: float | None = None
 
 
 @dataclass(frozen=True)

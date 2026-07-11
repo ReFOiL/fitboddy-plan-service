@@ -53,8 +53,14 @@ class PlanRequestFactory:
             description=payload.description,
             equipment=payload.equipment,
             is_cardio=payload.is_cardio,
+            is_hold=payload.is_hold,
             difficulty=payload.difficulty,
             workout_category=payload.workout_category,
+            default_sets=payload.default_sets,
+            default_reps=payload.default_reps,
+            default_duration_seconds=payload.default_duration_seconds,
+            default_rest_seconds=payload.default_rest_seconds,
+            default_weight_kg=payload.default_weight_kg,
         )
 
     @staticmethod
@@ -70,8 +76,14 @@ class PlanRequestFactory:
             description=payload.description,
             equipment=payload.equipment,
             is_cardio=payload.is_cardio,
+            is_hold=payload.is_hold,
             difficulty=payload.difficulty,
             workout_category=payload.workout_category,
+            default_sets=payload.default_sets,
+            default_reps=payload.default_reps,
+            default_duration_seconds=payload.default_duration_seconds,
+            default_rest_seconds=payload.default_rest_seconds,
+            default_weight_kg=payload.default_weight_kg,
         )
 
     @staticmethod

@@ -14,6 +14,7 @@ class PlanExercise:
     reps: int | None
     duration_seconds: int | None
     rest_seconds: int | None
+    weight_kg: float | None
 
 
 @dataclass(frozen=True)
@@ -51,8 +52,14 @@ class TrainerExercise:
     description: str | None
     equipment: str
     is_cardio: bool
+    is_hold: bool
     difficulty: int
     workout_category: str
+    default_sets: int
+    default_reps: int | None
+    default_duration_seconds: int | None
+    default_rest_seconds: int
+    default_weight_kg: float | None
     is_active: bool
     video_url: str | None
     created_at: datetime

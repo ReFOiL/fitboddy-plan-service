@@ -117,6 +117,12 @@ class TrainerExerciseRepository:
                     is_cardio=item.is_cardio,
                     difficulty=item.difficulty,
                     workout_category=item.workout_category,
+                    is_hold=item.is_hold,
+                    default_sets=item.default_sets,
+                    default_reps=item.default_reps,
+                    default_duration_seconds=item.default_duration_seconds,
+                    default_rest_seconds=item.default_rest_seconds,
+                    default_weight_kg=item.default_weight_kg,
                 )
             )
         self._session.flush()
@@ -164,6 +170,7 @@ class PlanMapper:
                     reps=line.reps,
                     duration_seconds=line.duration_seconds,
                     rest_seconds=line.rest_seconds,
+                    weight_kg=line.weight_kg,
                 )
                 for line in exercises
             ],
@@ -178,8 +185,14 @@ class PlanMapper:
             description=exercise.description,
             equipment=exercise.equipment,
             is_cardio=exercise.is_cardio,
+            is_hold=exercise.is_hold,
             difficulty=exercise.difficulty,
             workout_category=exercise.workout_category,
+            default_sets=exercise.default_sets,
+            default_reps=exercise.default_reps,
+            default_duration_seconds=exercise.default_duration_seconds,
+            default_rest_seconds=exercise.default_rest_seconds,
+            default_weight_kg=exercise.default_weight_kg,
             is_active=exercise.is_active,
             video_url=exercise.video_url,
             created_at=exercise.created_at,

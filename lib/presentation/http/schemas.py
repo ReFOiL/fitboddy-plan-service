@@ -26,8 +26,14 @@ class UpsertTrainerExerciseRequest(BaseModel):
     description: str | None = Field(default=None, max_length=4000)
     equipment: str = Field(min_length=2, max_length=32, default="none")
     is_cardio: bool = False
+    is_hold: bool = False
     difficulty: int = Field(default=1, ge=1, le=5)
     workout_category: WorkoutCategory = "full_body"
+    default_sets: int = Field(default=3, ge=1, le=10)
+    default_reps: int | None = Field(default=10, ge=1, le=100)
+    default_duration_seconds: int | None = Field(default=None, ge=5, le=3600)
+    default_rest_seconds: int = Field(default=60, ge=0, le=600)
+    default_weight_kg: float | None = Field(default=None, ge=0)
 
 
 class PlanExerciseResponse(BaseModel):
@@ -41,6 +47,7 @@ class PlanExerciseResponse(BaseModel):
     reps: int | None
     duration_seconds: int | None
     rest_seconds: int | None
+    weight_kg: float | None = None
 
 
 class PlanDayResponse(BaseModel):
@@ -75,8 +82,14 @@ class TrainerExerciseResponse(BaseModel):
     description: str | None = None
     equipment: str
     is_cardio: bool
+    is_hold: bool
     difficulty: int
     workout_category: WorkoutCategory
+    default_sets: int
+    default_reps: int | None = None
+    default_duration_seconds: int | None = None
+    default_rest_seconds: int
+    default_weight_kg: float | None = None
     is_active: bool
     video_url: str | None = None
     created_at: datetime

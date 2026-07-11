@@ -116,16 +116,19 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
     def _prescribe(exercise: ExerciseCandidate, *, sort_order: int, request: PlanGenerationInput) -> ExerciseLine:
         is_beginner_profile = request.level == TrainingLevel.BEGINNER or request.goal == TrainingGoal.REHABILITATION
         is_advanced_profile = request.level == TrainingLevel.ADVANCED and request.goal == TrainingGoal.MUSCLE_GAIN
-        if exercise.is_cardio:
-            duration = 40
-            rest = 30
-            sets = 3
+
+        sets = max(1, exercise.default_sets)
+        rest = max(0, exercise.default_rest_seconds)
+        weight = exercise.default_weight_kg
+
+        if exercise.is_hold:
+            duration = max(5, exercise.default_duration_seconds or 35)
             if request.is_first_plan and is_beginner_profile:
-                duration = 30
-                rest = 45
-                sets = 2
+                sets = max(1, sets - 1)
+                duration = max(10, int(duration * 0.75))
+                rest = rest + 15
             elif is_advanced_profile and not request.is_first_plan:
-                duration = 50
+                duration = int(duration * 1.2)
             return ExerciseLine(
                 exercise=exercise,
                 sort_order=sort_order,
@@ -133,14 +136,19 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
                 reps=None,
                 duration_seconds=duration,
                 rest_seconds=rest,
+                weight_kg=weight,
             )
-        sets = 3
-        reps = 10
-        rest = 60
+
+        reps = max(1, exercise.default_reps or 10)
         if request.is_first_plan and is_beginner_profile:
-            sets, reps, rest = 2, 8, 75
+            sets = max(1, sets - 1)
+            reps = max(4, reps - 2)
+            rest = rest + 15
         elif is_advanced_profile and not request.is_first_plan:
-            sets, reps, rest = 4, 8, 90
+            sets = sets + 1
+            rest = rest + 30
+            if weight is not None:
+                weight = round(weight * 1.1, 1)
         return ExerciseLine(
             exercise=exercise,
             sort_order=sort_order,
@@ -148,4 +156,5 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
             reps=reps,
             duration_seconds=None,
             rest_seconds=rest,
+            weight_kg=weight,
         )

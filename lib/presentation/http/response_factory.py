@@ -41,6 +41,7 @@ class PlanResponseFactory:
                     reps=line.reps,
                     duration_seconds=line.duration_seconds,
                     rest_seconds=line.rest_seconds,
+                    weight_kg=line.weight_kg,
                 )
                 for line in day.exercises
             ],

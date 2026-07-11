@@ -70,6 +70,7 @@ class PlanExerciseModel(Base):
     reps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rest_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     day: Mapped[PlanDayModel] = relationship("PlanDayModel", back_populates="exercises")
 
@@ -85,6 +86,12 @@ class TrainerExerciseModel(Base):
     is_cardio: Mapped[bool] = mapped_column(nullable=False, default=False)
     difficulty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     workout_category: Mapped[str] = mapped_column(String(50), nullable=False, default="full_body")
+    is_hold: Mapped[bool] = mapped_column(nullable=False, default=False)
+    default_sets: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    default_reps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    default_duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    default_rest_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    default_weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
     video_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
