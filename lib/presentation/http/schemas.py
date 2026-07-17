@@ -127,3 +127,10 @@ class ExerciseVideoUploadResponse(BaseModel):
     trainer_user_id: str
     row_id: str
     video_url: str
+
+
+class AdminExerciseListResponse(BaseModel):
+    items: list[TrainerExerciseResponse] = Field(default_factory=list)
+    total: int
+    page: int
+    page_size: int

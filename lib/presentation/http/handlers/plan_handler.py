@@ -2,13 +2,14 @@ from urllib.parse import quote, unquote
 
 from fastapi import HTTPException, Response, status
 
-from application.errors import IntegrationError, PlanError, ValidationError
+from application.errors import IntegrationError, PlanError, UnauthorizedError
 from application.media_storage import MediaValidationError
 from application.runtime import PlanApplicationRuntime
 from presentation.http.error_translator import ErrorTranslator
 from presentation.http.request_factory import PlanRequestFactory
 from presentation.http.response_factory import PlanResponseFactory
 from presentation.http.schemas import (
+    AdminExerciseListResponse,
     ClientExerciseLoadResponse,
     ExerciseVideoUploadResponse,
     GeneratePlanRequest,
@@ -233,6 +234,80 @@ class PlanHttpHandler:
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="media not found") from exc
         raise AssertionError("unreachable")
+
+    def admin_list_exercises(
+        self,
+        *,
+        authorization: str | None,
+        trainer_user_id: str | None,
+        include_archived: bool,
+        page: int,
+        page_size: int,
+    ) -> AdminExerciseListResponse:
+        try:
+            self._require_platform_admin(authorization)
+            with self._runtime.plan_service_scope() as plan_service:
+                items, total = plan_service.admin_list_exercises(
+                    trainer_user_id=trainer_user_id,
+                    include_archived=include_archived,
+                    page=page,
+                    page_size=page_size,
+                )
+                return AdminExerciseListResponse(
+                    items=[TrainerExerciseResponse.model_validate(item, from_attributes=True) for item in items],
+                    total=total,
+                    page=page,
+                    page_size=page_size,
+                )
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def admin_archive_exercise(self, *, authorization: str | None, trainer_user_id: str, row_id: str) -> None:
+        try:
+            self._require_platform_admin(authorization)
+            with self._runtime.plan_service_scope() as plan_service:
+                plan_service.archive_trainer_exercise(
+                    self._request_factory.to_archive_trainer_exercise_command(trainer_user_id, row_id)
+                )
+                return
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def admin_get_active_plan(self, *, authorization: str | None, user_id: str) -> TrainingPlanResponse:
+        try:
+            self._require_platform_admin(authorization)
+            with self._runtime.plan_service_scope() as plan_service:
+                plan = plan_service.admin_get_active_plan(user_id)
+                return self._response_factory.from_domain_plan(plan)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def admin_list_client_loads(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+    ) -> list[ClientExerciseLoadResponse]:
+        try:
+            self._require_platform_admin(authorization)
+            with self._runtime.plan_service_scope() as plan_service:
+                loads = plan_service.admin_list_client_loads(client_user_id, trainer_user_id)
+                return [self._response_factory.from_domain_client_load(item) for item in loads]
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def _require_platform_admin(self, authorization: str | None) -> None:
+        if authorization is None or not authorization.startswith("Bearer "):
+            raise UnauthorizedError("missing bearer token")
+        token = authorization.removeprefix("Bearer ").strip()
+        if not token:
+            raise UnauthorizedError("empty bearer token")
+        self._runtime.auth_gateway.require_platform_admin(token)
 
     @staticmethod
     def _extract_object_key(video_url: str | None) -> str | None:

@@ -316,6 +316,33 @@ class PlanService:
         model.is_active = False
         self._session.commit()
 
+    def admin_list_exercises(
+        self,
+        *,
+        trainer_user_id: str | None,
+        include_archived: bool,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[TrainerExercise], int]:
+        page = max(page, 1)
+        page_size = min(max(page_size, 1), 100)
+        offset = (page - 1) * page_size
+        rows, total = self._trainer_exercises.list_all(
+            trainer_user_id=trainer_user_id,
+            include_archived=include_archived,
+            offset=offset,
+            limit=page_size,
+        )
+        return [self._mapper.trainer_exercise_to_domain(item) for item in rows], total
+
+    def admin_get_active_plan(self, user_id: str) -> TrainingPlan:
+        return self.get_active_plan(GetActivePlanCommand(user_id=user_id))
+
+    def admin_list_client_loads(self, client_user_id: str, trainer_user_id: str) -> list[ClientExerciseLoad]:
+        return self.list_client_loads(
+            ListClientLoadsCommand(client_user_id=client_user_id, trainer_user_id=trainer_user_id)
+        )
+
     def set_trainer_exercise_video_url(
         self,
         trainer_user_id: str,

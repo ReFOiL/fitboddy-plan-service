@@ -6,6 +6,14 @@ class ValidationError(PlanError):
     pass
 
 
+class UnauthorizedError(PlanError):
+    pass
+
+
+class ForbiddenError(PlanError):
+    pass
+
+
 class PlanNotFoundError(PlanError):
     pass
 

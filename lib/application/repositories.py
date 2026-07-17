@@ -166,6 +166,32 @@ class TrainerExerciseRepository:
         statement = statement.order_by(TrainerExerciseModel.exercise_name.asc())
         return list(self._session.scalars(statement).all())
 
+    def list_all(
+        self,
+        *,
+        trainer_user_id: str | None = None,
+        include_archived: bool = True,
+        offset: int = 0,
+        limit: int = 20,
+    ) -> tuple[list[TrainerExerciseModel], int]:
+        from sqlalchemy import func
+
+        statement = select(TrainerExerciseModel)
+        count_statement = select(func.count()).select_from(TrainerExerciseModel)
+        if trainer_user_id:
+            statement = statement.where(TrainerExerciseModel.trainer_user_id == trainer_user_id)
+            count_statement = count_statement.where(TrainerExerciseModel.trainer_user_id == trainer_user_id)
+        if not include_archived:
+            statement = statement.where(TrainerExerciseModel.is_active.is_(True))
+            count_statement = count_statement.where(TrainerExerciseModel.is_active.is_(True))
+        total = int(self._session.execute(count_statement).scalar_one())
+        rows = list(
+            self._session.scalars(
+                statement.order_by(TrainerExerciseModel.updated_at.desc()).offset(offset).limit(limit)
+            ).all()
+        )
+        return rows, total
+
     def find_by_trainer_and_row_id(
         self,
         trainer_user_id: str,
