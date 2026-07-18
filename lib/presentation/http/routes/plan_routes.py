@@ -1,10 +1,12 @@
-from fastapi import APIRouter, File, Query, Request, Response, UploadFile, status
+from fastapi import APIRouter, File, Header, Query, Request, Response, UploadFile, status
 
 from presentation.http.schemas import (
     ClientExerciseLoadResponse,
     ExerciseVideoUploadResponse,
     GeneratePlanRequest,
     PlanDayResponse,
+    PlatformExerciseResponse,
+    TodayWorkoutResponse,
     TrainerExerciseResponse,
     TrainingPlanResponse,
     UpsertClientLoadRequest,
@@ -27,6 +29,24 @@ class PlanRoutes:
             self.get_active_plan,
             methods=["GET"],
             response_model=TrainingPlanResponse,
+        )
+        self.router.add_api_route(
+            "/plans/me/today",
+            self.get_today_workout,
+            methods=["GET"],
+            response_model=TodayWorkoutResponse,
+        )
+        self.router.add_api_route(
+            "/plans/me/days/{day_index}/complete",
+            self.complete_plan_day,
+            methods=["POST"],
+            response_model=TodayWorkoutResponse,
+        )
+        self.router.add_api_route(
+            "/plans/me/days/{day_index}/exercises/{line_id}/replace",
+            self.replace_plan_exercise,
+            methods=["POST"],
+            response_model=TodayWorkoutResponse,
         )
         self.router.add_api_route(
             "/plans/{plan_id}/days/{day_index}",
@@ -96,6 +116,24 @@ class PlanRoutes:
             methods=["PUT"],
             response_model=ClientExerciseLoadResponse,
         )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/platform/loads",
+            self.list_client_platform_loads,
+            methods=["GET"],
+            response_model=list[ClientExerciseLoadResponse],
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/platform/loads/{exercise_row_id}",
+            self.upsert_client_platform_load,
+            methods=["PUT"],
+            response_model=ClientExerciseLoadResponse,
+        )
+        self.router.add_api_route(
+            "/platform-exercises",
+            self.list_active_platform_exercises,
+            methods=["GET"],
+            response_model=list[PlatformExerciseResponse],
+        )
 
     @staticmethod
     def generate_plan(request: Request, payload: GeneratePlanRequest) -> TrainingPlanResponse:
@@ -108,6 +146,34 @@ class PlanRoutes:
     @staticmethod
     def get_plan_day(request: Request, plan_id: str, day_index: int) -> PlanDayResponse:
         return request.app.state.plan_handler.get_plan_day(plan_id, day_index)
+
+    @staticmethod
+    def get_today_workout(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> TodayWorkoutResponse:
+        return request.app.state.plan_handler.get_today_workout(authorization=authorization)
+
+    @staticmethod
+    def complete_plan_day(
+        request: Request,
+        day_index: int,
+        authorization: str | None = Header(default=None),
+    ) -> TodayWorkoutResponse:
+        return request.app.state.plan_handler.complete_plan_day(authorization=authorization, day_index=day_index)
+
+    @staticmethod
+    def replace_plan_exercise(
+        request: Request,
+        day_index: int,
+        line_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> TodayWorkoutResponse:
+        return request.app.state.plan_handler.replace_plan_exercise(
+            authorization=authorization,
+            day_index=day_index,
+            line_id=line_id,
+        )
 
     @staticmethod
     def list_trainer_exercises(
@@ -185,3 +251,24 @@ class PlanRoutes:
             exercise_row_id,
             payload,
         )
+
+    @staticmethod
+    def list_client_platform_loads(request: Request, client_user_id: str) -> list[ClientExerciseLoadResponse]:
+        return request.app.state.plan_handler.list_client_platform_loads(client_user_id)
+
+    @staticmethod
+    def upsert_client_platform_load(
+        request: Request,
+        client_user_id: str,
+        exercise_row_id: str,
+        payload: UpsertClientLoadRequest,
+    ) -> ClientExerciseLoadResponse:
+        return request.app.state.plan_handler.upsert_client_platform_load(
+            client_user_id,
+            exercise_row_id,
+            payload,
+        )
+
+    @staticmethod
+    def list_active_platform_exercises(request: Request) -> list[PlatformExerciseResponse]:
+        return request.app.state.plan_handler.list_active_platform_exercises()

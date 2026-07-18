@@ -7,6 +7,7 @@ from domain.value_objects import TrainingGoal, TrainingLevel, WorkoutLocation
 
 def _request(**overrides: object) -> PlanGenerationInput:
     payload: dict[str, object] = {
+        "source": "trainer",
         "trainer_user_id": "trainer-1",
         "goal": TrainingGoal.MAINTENANCE,
         "level": TrainingLevel.INTERMEDIATE,

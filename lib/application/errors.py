@@ -22,6 +22,10 @@ class TrainerExerciseNotFoundError(PlanError):
     pass
 
 
+class PlatformExerciseNotFoundError(PlanError):
+    pass
+
+
 class ConflictError(PlanError):
     pass
 

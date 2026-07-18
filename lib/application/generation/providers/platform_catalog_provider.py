@@ -3,34 +3,22 @@ from __future__ import annotations
 from application.generation.contracts import AbstractCatalogProvider
 from application.generation.models import ExerciseCandidate, PlanGenerationInput
 from application.generation.providers.candidate_mapping import exercise_row_to_candidate
-from application.repositories import PlatformExerciseRepository, TrainerExerciseRepository
+from application.repositories import PlatformExerciseRepository
 
 
-class TrainerCatalogProvider(AbstractCatalogProvider):
-    """Провайдер каталога, привязанного к тренеру.
-
-    При первом обращении клонирует активные упражнения из платформенной базы
-    (`platform_exercises`). Пустая база бутстрапится из bootstrap-провайдера.
-    """
+class PlatformCatalogProvider(AbstractCatalogProvider):
+    """Каталог платформенной базы (`platform_exercises`) для system-генерации."""
 
     def __init__(
         self,
-        trainer_repo: TrainerExerciseRepository,
         platform_repo: PlatformExerciseRepository,
         bootstrap_provider: AbstractCatalogProvider,
     ) -> None:
-        self._trainer_repo = trainer_repo
         self._platform_repo = platform_repo
         self._bootstrap_provider = bootstrap_provider
 
     def list_exercises(self, request: PlanGenerationInput) -> list[ExerciseCandidate]:
-        if not request.trainer_user_id:
-            return []
-        trainer_exercises = self._trainer_repo.list_by_trainer(request.trainer_user_id)
-        if not trainer_exercises:
-            platform_rows = self._platform_repo.bootstrap_if_empty(self._bootstrap_provider.list_exercises(request))
-            trainer_exercises = self._trainer_repo.clone_from_platform(request.trainer_user_id, platform_rows)
-
+        rows = self._platform_repo.bootstrap_if_empty(self._bootstrap_provider.list_exercises(request))
         return [
             exercise_row_to_candidate(
                 exercise_id=item.row_id,
@@ -48,5 +36,5 @@ class TrainerCatalogProvider(AbstractCatalogProvider):
                 load_scheme=item.load_scheme,
                 scheme_steps_json=item.scheme_steps_json,
             )
-            for item in trainer_exercises
+            for item in rows
         ]

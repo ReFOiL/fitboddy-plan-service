@@ -8,7 +8,9 @@ from application.generation.contracts import (
 from application.generation.factory import build_default_generation_orchestrator
 from application.generation.models import ExerciseCandidate, PlanGenerationInput, ScheduledSession
 from application.generation.orchestrator import GenerationOrchestrator, GenerationOutcome
+from application.generation.providers.platform_catalog_provider import PlatformCatalogProvider
 from application.generation.providers.seed_catalog_provider import SeedCatalogProvider
+from application.generation.providers.source_aware_catalog_provider import SourceAwareCatalogProvider
 from application.generation.providers.trainer_catalog_provider import TrainerCatalogProvider
 
 __all__ = [
@@ -17,7 +19,9 @@ __all__ = [
     "AbstractSchedulingCalculator",
     "CatalogMatchingCalculator",
     "WorkoutSchedulingCalculator",
+    "PlatformCatalogProvider",
     "SeedCatalogProvider",
+    "SourceAwareCatalogProvider",
     "TrainerCatalogProvider",
     "GenerationOrchestrator",
     "GenerationOutcome",

@@ -57,9 +57,10 @@ def _candidate(
 
 
 class SeedCatalogProvider(AbstractCatalogProvider):
-    """Временный каталог для MVP plan-service.
+    """Bootstrap-пул для пустого `platform_exercises`.
 
-    До выделения отдельного exercise-service используем встроенный пул упражнений.
+    Не источник для каталога тренера напрямую: тренеры клонируют базу из Support.
+    Seed применяется только когда платформенный каталог ещё пуст (первый старт).
     """
 
     def list_exercises(self, request: PlanGenerationInput) -> list[ExerciseCandidate]:

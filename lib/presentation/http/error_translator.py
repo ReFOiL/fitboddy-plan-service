@@ -6,6 +6,7 @@ from application.errors import (
     IntegrationError,
     PlanError,
     PlanNotFoundError,
+    PlatformExerciseNotFoundError,
     TrainerExerciseNotFoundError,
     UnauthorizedError,
     ValidationError,
@@ -18,6 +19,8 @@ class ErrorTranslator:
         if isinstance(exc, PlanNotFoundError):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         if isinstance(exc, TrainerExerciseNotFoundError):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        if isinstance(exc, PlatformExerciseNotFoundError):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         if isinstance(exc, ConflictError):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

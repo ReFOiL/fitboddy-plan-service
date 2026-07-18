@@ -1,9 +1,36 @@
+from datetime import date
+from unittest.mock import patch
+
 from fastapi.testclient import TestClient
 
+from application.gateways import AuthUser
 from presentation.http.main import app
+
 
 def _client() -> TestClient:
     return TestClient(app)
+
+
+def _auth_as_platform_admin() -> None:
+    runtime = app.state.plan_handler._runtime
+    runtime.auth_gateway.require_platform_admin = lambda _token: AuthUser(
+        user_id="admin_1",
+        tenant_id="platform",
+        role="platform_admin",
+    )
+
+
+def _auth_as_user(user_id: str, *, role: str = "client") -> None:
+    runtime = app.state.plan_handler._runtime
+    runtime.auth_gateway.get_current_user = lambda _token: AuthUser(
+        user_id=user_id,
+        tenant_id="tenant_1",
+        role=role,
+    )
+
+
+_ADMIN_HEADERS = {"Authorization": "Bearer test-admin-token"}
+_USER_HEADERS = {"Authorization": "Bearer test-user-token"}
 
 
 def test_health() -> None:
@@ -27,6 +54,7 @@ def test_generate_and_read_active_plan() -> None:
         generate = client.post("/api/v1/plans/generate", json=payload)
         assert generate.status_code == 201
         body = generate.json()
+        assert body["source"] == "trainer"
         assert body["trainer_user_id"] == "trainer_1"
         assert body["user_id"] == "client_1"
         assert body["status"] == "active"
@@ -167,12 +195,12 @@ def test_exercise_video_upload_and_delete_success() -> None:
             self.deleted: list[str] = []
             self.expected_row_id: str | None = None
 
-        async def upload_video(self, *, trainer_user_id: str, row_id: str, filename: str, data: bytes) -> str:
-            assert trainer_user_id == "trainer_video_2"
+        async def upload_video(self, *, owner_id: str, row_id: str, filename: str, data: bytes) -> str:
+            assert owner_id == "trainer_video_2"
             assert row_id == self.expected_row_id
             assert filename == "demo.mp4"
             assert data
-            return f"videos/{trainer_user_id}/{row_id}/fake.mp4"
+            return f"videos/{owner_id}/{row_id}/fake.mp4"
 
         async def delete_media(self, object_name: str) -> None:
             self.deleted.append(object_name)
@@ -270,6 +298,34 @@ def test_trainer_catalog_auto_seeds_baseline_for_new_trainer() -> None:
         assert len(body) > 0
         assert any(item["exercise_name"] == "Отжимания" for item in body)
         assert all("row_id" in item and "exercise_id" not in item for item in body)
+
+
+def test_trainer_baseline_copies_from_platform_catalog() -> None:
+    """Trainer starter pool is a clone of platform_exercises (Support base), not a parallel seed."""
+    from sqlalchemy import select
+
+    from application.models import PlatformExerciseModel
+
+    with _client() as client:
+        listed = client.get("/api/v1/trainers/trainer_from_platform/exercises")
+        assert listed.status_code == 200
+        trainer_names = {item["exercise_name"] for item in listed.json()}
+        assert "Отжимания" in trainer_names
+
+        runtime = app.state.plan_handler._runtime
+        session = runtime._db_manager.create_session()
+        try:
+            platform_names = {
+                row.exercise_name
+                for row in session.scalars(
+                    select(PlatformExerciseModel).where(PlatformExerciseModel.is_active.is_(True))
+                ).all()
+            }
+        finally:
+            session.close()
+
+        assert platform_names
+        assert trainer_names == platform_names
 
 
 def test_generate_plan_requires_completed_questionnaire_when_guard_enabled() -> None:
@@ -448,3 +504,474 @@ def test_unavailable_equipment_excludes_matching_exercises() -> None:
             for exercise in day["exercises"]
         }
         assert air_bike_id not in air_ids
+
+
+def test_platform_exercises_admin_crud() -> None:
+    create_payload = {
+        "exercise_name": "Platform Goblet Squat",
+        "description": "Base catalog exercise from Support.",
+        "equipment": "dumbbells",
+        "is_cardio": False,
+        "is_hold": False,
+        "difficulty": 2,
+        "workout_category": "lower",
+        "catalog_key": "platform_goblet_squat",
+        "default_sets": 3,
+        "default_reps": 12,
+        "default_rest_seconds": 60,
+    }
+    with _client() as client:
+        _auth_as_platform_admin()
+
+        unauthorized = client.get("/api/v1/admin/platform-exercises")
+        assert unauthorized.status_code == 401
+
+        created = client.post(
+            "/api/v1/admin/platform-exercises",
+            json=create_payload,
+            headers=_ADMIN_HEADERS,
+        )
+        assert created.status_code == 201
+        body = created.json()
+        row_id = body["row_id"]
+        assert body["catalog_key"] == "platform_goblet_squat"
+        assert body["exercise_name"] == "Platform Goblet Squat"
+        assert body["is_active"] is True
+
+        duplicate = client.post(
+            "/api/v1/admin/platform-exercises",
+            json=create_payload,
+            headers=_ADMIN_HEADERS,
+        )
+        assert duplicate.status_code == 409
+
+        detail = client.get(f"/api/v1/admin/platform-exercises/{row_id}", headers=_ADMIN_HEADERS)
+        assert detail.status_code == 200
+        assert detail.json()["description"] == "Base catalog exercise from Support."
+
+        listed = client.get("/api/v1/admin/platform-exercises", headers=_ADMIN_HEADERS)
+        assert listed.status_code == 200
+        assert listed.json()["total"] >= 1
+        assert any(item["row_id"] == row_id for item in listed.json()["items"])
+
+        updated = client.put(
+            f"/api/v1/admin/platform-exercises/{row_id}",
+            json={
+                **create_payload,
+                "exercise_name": "Platform Goblet Squat Updated",
+                "difficulty": 3,
+            },
+            headers=_ADMIN_HEADERS,
+        )
+        assert updated.status_code == 200
+        assert updated.json()["exercise_name"] == "Platform Goblet Squat Updated"
+        assert updated.json()["difficulty"] == 3
+
+        archived = client.post(
+            f"/api/v1/admin/platform-exercises/{row_id}/archive",
+            headers=_ADMIN_HEADERS,
+        )
+        assert archived.status_code == 204
+
+        active_only = client.get(
+            "/api/v1/admin/platform-exercises?include_archived=false",
+            headers=_ADMIN_HEADERS,
+        )
+        assert active_only.status_code == 200
+        assert all(item["row_id"] != row_id for item in active_only.json()["items"])
+
+        with_archived = client.get(
+            "/api/v1/admin/platform-exercises?include_archived=true",
+            headers=_ADMIN_HEADERS,
+        )
+        archived_item = next(item for item in with_archived.json()["items"] if item["row_id"] == row_id)
+        assert archived_item["is_active"] is False
+
+
+def test_platform_exercise_video_upload_requires_s3_configuration() -> None:
+    with _client() as client:
+        _auth_as_platform_admin()
+        created = client.post(
+            "/api/v1/admin/platform-exercises",
+            json={
+                "exercise_name": "Platform Video Squat",
+                "equipment": "none",
+                "is_cardio": False,
+                "is_hold": False,
+                "difficulty": 2,
+                "workout_category": "lower",
+                "catalog_key": "platform_video_squat",
+            },
+            headers=_ADMIN_HEADERS,
+        )
+        assert created.status_code == 201
+        row_id = created.json()["row_id"]
+        response = client.post(
+            f"/api/v1/admin/platform-exercises/{row_id}/video",
+            headers=_ADMIN_HEADERS,
+            files={"file": ("demo.mp4", b"fake-video-bytes", "video/mp4")},
+        )
+        assert response.status_code == 503
+        assert "not configured" in response.json()["detail"]
+
+
+def test_generate_system_plan_without_trainer() -> None:
+    payload = {
+        "source": "system",
+        "user_id": "client_system_1",
+        "goal": "weight_loss",
+        "level": "beginner",
+        "workout_location": "home",
+        "workouts_per_week": 3,
+        "unavailable_equipment": ["dumbbells", "barbell"],
+    }
+    with _client() as client:
+        generate = client.post("/api/v1/plans/generate", json=payload)
+        assert generate.status_code == 201
+        body = generate.json()
+        assert body["source"] == "system"
+        assert body["trainer_user_id"] is None
+        assert body["user_id"] == "client_system_1"
+        assert body["status"] == "active"
+        assert len(body["days"]) > 0
+
+        active = client.get("/api/v1/plans/users/client_system_1/active")
+        assert active.status_code == 200
+        assert active.json()["source"] == "system"
+        assert active.json()["trainer_user_id"] is None
+        assert active.json()["plan_id"] == body["plan_id"]
+
+
+def test_generate_system_rejects_trainer_user_id() -> None:
+    payload = {
+        "source": "system",
+        "trainer_user_id": "should_not_be_here",
+        "user_id": "client_system_bad",
+        "goal": "maintenance",
+        "level": "beginner",
+        "workout_location": "home",
+        "workouts_per_week": 3,
+    }
+    with _client() as client:
+        response = client.post("/api/v1/plans/generate", json=payload)
+        assert response.status_code == 422
+
+
+def test_generate_trainer_requires_trainer_user_id() -> None:
+    payload = {
+        "source": "trainer",
+        "user_id": "client_missing_trainer",
+        "goal": "maintenance",
+        "level": "beginner",
+        "workout_location": "home",
+        "workouts_per_week": 3,
+    }
+    with _client() as client:
+        response = client.post("/api/v1/plans/generate", json=payload)
+        assert response.status_code == 422
+
+
+def test_generate_system_replaces_previous_trainer_plan() -> None:
+    with _client() as client:
+        trainer_plan = client.post(
+            "/api/v1/plans/generate",
+            json={
+                "source": "trainer",
+                "trainer_user_id": "trainer_switch_1",
+                "user_id": "client_switch_1",
+                "goal": "maintenance",
+                "level": "intermediate",
+                "workout_location": "gym",
+                "workouts_per_week": 3,
+            },
+        )
+        assert trainer_plan.status_code == 201
+        trainer_plan_id = trainer_plan.json()["plan_id"]
+
+        system_plan = client.post(
+            "/api/v1/plans/generate",
+            json={
+                "source": "system",
+                "user_id": "client_switch_1",
+                "goal": "weight_loss",
+                "level": "beginner",
+                "workout_location": "home",
+                "workouts_per_week": 3,
+            },
+        )
+        assert system_plan.status_code == 201
+        assert system_plan.json()["source"] == "system"
+        assert system_plan.json()["plan_id"] != trainer_plan_id
+
+        active = client.get("/api/v1/plans/users/client_switch_1/active")
+        assert active.status_code == 200
+        assert active.json()["plan_id"] == system_plan.json()["plan_id"]
+        assert active.json()["source"] == "system"
+
+
+def test_generate_trainer_compat_without_source_field() -> None:
+    """Legacy clients that omit source still get trainer plans."""
+    payload = {
+        "trainer_user_id": "trainer_compat_1",
+        "user_id": "client_compat_1",
+        "goal": "maintenance",
+        "level": "intermediate",
+        "workout_location": "gym",
+        "workouts_per_week": 3,
+    }
+    with _client() as client:
+        response = client.post("/api/v1/plans/generate", json=payload)
+        assert response.status_code == 201
+        assert response.json()["source"] == "trainer"
+        assert response.json()["trainer_user_id"] == "trainer_compat_1"
+
+
+def test_new_trainer_clones_support_added_platform_exercise() -> None:
+    with _client() as client:
+        _auth_as_platform_admin()
+        created = client.post(
+            "/api/v1/admin/platform-exercises",
+            json={
+                "exercise_name": "Support Unique Move",
+                "equipment": "none",
+                "is_cardio": False,
+                "is_hold": False,
+                "difficulty": 1,
+                "workout_category": "full_body",
+                "catalog_key": "support_unique_move",
+            },
+            headers=_ADMIN_HEADERS,
+        )
+        assert created.status_code == 201
+
+        listed = client.get("/api/v1/trainers/trainer_after_support_add/exercises")
+        assert listed.status_code == 200
+        names = {item["exercise_name"] for item in listed.json()}
+        assert "Support Unique Move" in names
+
+
+def test_today_complete_and_replace_system_workout() -> None:
+    user_id = "client_today_1"
+    with _client() as client:
+        _auth_as_user(user_id)
+        generated = client.post(
+            "/api/v1/plans/generate",
+            json={
+                "source": "system",
+                "user_id": user_id,
+                "goal": "weight_loss",
+                "level": "beginner",
+                "workout_location": "home",
+                "workouts_per_week": 3,
+                "unavailable_equipment": ["dumbbells", "barbell"],
+            },
+        )
+        assert generated.status_code == 201
+        plan = generated.json()
+        workout_day = next(day for day in plan["days"] if day["exercises"])
+        workout_date = date.fromisoformat(workout_day["scheduled_for"])
+        line_id = workout_day["exercises"][0]["line_id"]
+        previous_name = workout_day["exercises"][0]["exercise_name"]
+
+        with patch("application.use_cases.date") as mocked_date:
+            mocked_date.today.return_value = workout_date
+            today_response = client.get("/api/v1/plans/me/today", headers=_USER_HEADERS)
+        assert today_response.status_code == 200
+        today_body = today_response.json()
+        assert today_body["plan_id"] == plan["plan_id"]
+        assert today_body["source"] == "system"
+        assert today_body["day_index"] == workout_day["day_index"]
+        assert today_body["is_completed"] is False
+
+        replaced = client.post(
+            f"/api/v1/plans/me/days/{workout_day['day_index']}/exercises/{line_id}/replace",
+            headers=_USER_HEADERS,
+        )
+        assert replaced.status_code == 200
+        replaced_body = replaced.json()
+        replaced_line = next(item for item in replaced_body["exercises"] if item["line_id"] == line_id)
+        assert replaced_line["exercise_name"] != previous_name
+
+        completed = client.post(
+            f"/api/v1/plans/me/days/{workout_day['day_index']}/complete",
+            headers=_USER_HEADERS,
+        )
+        assert completed.status_code == 200
+        assert completed.json()["is_completed"] is True
+        assert completed.json()["completed_at"] is not None
+
+        again = client.post(
+            f"/api/v1/plans/me/days/{workout_day['day_index']}/complete",
+            headers=_USER_HEADERS,
+        )
+        assert again.status_code == 409
+
+        blocked_replace = client.post(
+            f"/api/v1/plans/me/days/{workout_day['day_index']}/exercises/{line_id}/replace",
+            headers=_USER_HEADERS,
+        )
+        assert blocked_replace.status_code == 409
+
+
+def test_platform_loads_affect_system_generated_plan() -> None:
+    client_user_id = "client_platform_loads_1"
+    working_weight = 99.5
+    with _client() as client:
+        catalog = client.get("/api/v1/platform-exercises")
+        assert catalog.status_code == 200
+        weighted = [
+            item
+            for item in catalog.json()
+            if item.get("is_active")
+            and item.get("default_weight_kg") is not None
+            and float(item["default_weight_kg"]) > 0
+            and not item.get("is_cardio")
+        ]
+        assert weighted
+        target_ids = {item["row_id"] for item in weighted}
+        for item in weighted:
+            load = client.put(
+                f"/api/v1/plans/clients/{client_user_id}/platform/loads/{item['row_id']}",
+                json={"working_weight_kg": working_weight},
+            )
+            assert load.status_code == 200
+            assert load.json()["exercise_scope"] == "platform"
+            assert load.json()["trainer_user_id"] is None
+
+        listed = client.get(f"/api/v1/plans/clients/{client_user_id}/platform/loads")
+        assert listed.status_code == 200
+        assert len(listed.json()) == len(weighted)
+
+        generated = client.post(
+            "/api/v1/plans/generate",
+            json={
+                "source": "system",
+                "user_id": client_user_id,
+                "goal": "maintenance",
+                "level": "intermediate",
+                "workout_location": "gym",
+                "workouts_per_week": 3,
+                "unavailable_equipment": [],
+            },
+        )
+        assert generated.status_code == 201
+        exercises = [
+            exercise
+            for day in generated.json()["days"]
+            for exercise in day["exercises"]
+            if exercise["exercise_id"] in target_ids
+        ]
+        assert exercises
+        sample = exercises[0]
+        assert sample["weight_kg"] == working_weight
+        assert sample["set_prescriptions"]
+        assert sample["set_prescriptions"][-1]["weight_kg"] == working_weight
+
+
+def test_generation_policy_get_and_put() -> None:
+    with _client() as client:
+        _auth_as_platform_admin()
+        fetched = client.get("/api/v1/admin/generation-policy", headers=_ADMIN_HEADERS)
+        assert fetched.status_code == 200
+        body = fetched.json()
+        assert "excluded_pairs" in body
+        assert "default_splits" in body
+        assert "default_workouts_per_week" in body
+
+        updated = client.put(
+            "/api/v1/admin/generation-policy",
+            headers=_ADMIN_HEADERS,
+            json={
+                "excluded_pairs": [],
+                "default_splits": {
+                    "maintenance|beginner": ["full_body", "full_body", "full_body"],
+                },
+                "default_workouts_per_week": {
+                    "beginner": 2,
+                    "intermediate": 3,
+                    "advanced": 4,
+                },
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["default_workouts_per_week"]["beginner"] == 2
+
+        system_plan = client.post(
+            "/api/v1/plans/generate",
+            json={
+                "source": "system",
+                "user_id": "client_policy_wpw_1",
+                "goal": "maintenance",
+                "level": "beginner",
+                "workout_location": "home",
+                "workouts_per_week": 3,
+                "unavailable_equipment": ["dumbbells", "barbell"],
+            },
+        )
+        assert system_plan.status_code == 201
+        assert system_plan.json()["workouts_per_week"] == 2
+
+
+def test_regenerate_uses_adherence_to_adjust_frequency() -> None:
+    user_id = "client_adherence_1"
+    with _client() as client:
+        first = client.post(
+            "/api/v1/plans/generate",
+            json={
+                "source": "system",
+                "user_id": user_id,
+                "goal": "maintenance",
+                "level": "intermediate",
+                "workout_location": "gym",
+                "workouts_per_week": 3,
+            },
+        )
+        assert first.status_code == 201
+        plan = first.json()
+        assert plan["workouts_per_week"] == 3
+        day_indexes = [day["day_index"] for day in plan["days"]]
+        assert day_indexes
+        _auth_as_user(user_id)
+        for day_index in day_indexes:
+            completed = client.post(
+                f"/api/v1/plans/me/days/{day_index}/complete",
+                headers=_USER_HEADERS,
+            )
+            assert completed.status_code == 200
+
+        second = client.post(
+            "/api/v1/plans/generate",
+            json={
+                "source": "system",
+                "user_id": user_id,
+                "goal": "maintenance",
+                "level": "intermediate",
+                "workout_location": "gym",
+                "workouts_per_week": 3,
+            },
+        )
+        assert second.status_code == 201
+        assert second.json()["previous_adherence"] == 1.0
+        assert second.json()["workouts_per_week"] == 4
+
+
+def test_platform_load_rejects_unknown_exercise() -> None:
+    with _client() as client:
+        response = client.put(
+            "/api/v1/plans/clients/client_bad_platform_load/platform/loads/missing-row",
+            json={"working_weight_kg": 40},
+        )
+        assert response.status_code == 404
+
+
+def test_today_requires_auth() -> None:
+    with _client() as client:
+        response = client.get("/api/v1/plans/me/today")
+        assert response.status_code == 401
+
+
+def test_today_not_found_without_plan() -> None:
+    with _client() as client:
+        _auth_as_user("client_no_plan_today")
+        response = client.get("/api/v1/plans/me/today", headers=_USER_HEADERS)
+        assert response.status_code == 404

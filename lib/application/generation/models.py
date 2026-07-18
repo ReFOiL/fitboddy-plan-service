@@ -56,7 +56,8 @@ class ScheduledSession:
 
 @dataclass(frozen=True)
 class PlanGenerationInput:
-    trainer_user_id: str
+    source: str
+    trainer_user_id: str | None
     goal: TrainingGoal
     level: TrainingLevel
     workout_location: WorkoutLocation | None
@@ -66,3 +67,6 @@ class PlanGenerationInput:
     recent_exercise_ids: set[str]
     is_first_plan: bool
     client_working_weights: dict[str, float] = field(default_factory=dict)
+    adherence_score: float = 1.0
+    weekly_split: tuple[str, ...] = ()
+    excluded_pairs: tuple[tuple[str, str], ...] = ()

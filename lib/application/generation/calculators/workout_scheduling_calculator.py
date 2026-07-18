@@ -36,7 +36,10 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
         for week in range(1, 5):
             week_start = request.start_date + timedelta(days=(week - 1) * 7)
             offsets = self._choose_offsets(workouts_per_week, variation_seed, week)
-            anchors = self._select_anchors(pool, workouts_per_week, week, variation_seed)
+            anchors = self._select_anchors(pool, workouts_per_week, week, variation_seed, request.weekly_split)
+            week_volume = self._WEEKLY_VOLUME.get(week, 1.2)
+            if request.adherence_score <= 0.45:
+                week_volume = round(week_volume * 0.9, 3)
             for slot_index, (offset, anchor) in enumerate(zip(offsets, anchors, strict=False)):
                 scheduled_for = week_start + timedelta(days=offset)
                 lines = self._compose_lines(pool, anchor, week, slot_index, request, variation_seed)
@@ -45,7 +48,7 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
                         scheduled_for=scheduled_for,
                         week=week,
                         day_of_week=scheduled_for.weekday(),
-                        volume_multiplier=self._WEEKLY_VOLUME.get(week, 1.2),
+                        volume_multiplier=week_volume,
                         lines=lines,
                     )
                 )
@@ -57,7 +60,13 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
         return list(options[pick])
 
     @staticmethod
-    def _select_anchors(pool: list[ExerciseCandidate], workouts_per_week: int, week: int, variation_seed: int) -> list[ExerciseCandidate]:
+    def _select_anchors(
+        pool: list[ExerciseCandidate],
+        workouts_per_week: int,
+        week: int,
+        variation_seed: int,
+        weekly_split: tuple[str, ...],
+    ) -> list[ExerciseCandidate]:
         by_category: dict[str, list[ExerciseCandidate]] = {}
         for exercise in pool:
             by_category.setdefault(exercise.workout_category or "full_body", []).append(exercise)
@@ -67,7 +76,11 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
         rng = random.Random((variation_seed ^ 0x85EBCA6B) + week * 7919)
         anchors: list[ExerciseCandidate] = []
         for i in range(workouts_per_week):
-            category = categories[(i + week - 1) % len(categories)]
+            if weekly_split:
+                preferred = weekly_split[i % len(weekly_split)]
+                category = preferred if preferred in by_category else categories[(i + week - 1) % len(categories)]
+            else:
+                category = categories[(i + week - 1) % len(categories)]
             anchors.append(rng.choice(by_category[category]))
         return anchors
 
@@ -93,7 +106,12 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
         while len(picked) < target and categories:
             category = categories[cursor % len(categories)]
             cursor += 1
-            candidates = [item for item in by_category.get(category, []) if item.exercise_id not in used]
+            candidates = [
+                item
+                for item in by_category.get(category, [])
+                if item.exercise_id not in used
+                and not self._conflicts_with_excluded(item.exercise_id, used, request.excluded_pairs)
+            ]
             if not candidates:
                 idle_rounds += 1
                 if idle_rounds >= len(categories):
@@ -107,6 +125,19 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
             self._prescribe(item, sort_order=index + 1, request=request)
             for index, item in enumerate(picked)
         ]
+
+    @staticmethod
+    def _conflicts_with_excluded(
+        exercise_id: str,
+        used_ids: set[str],
+        excluded_pairs: tuple[tuple[str, str], ...],
+    ) -> bool:
+        for left, right in excluded_pairs:
+            if exercise_id == left and right in used_ids:
+                return True
+            if exercise_id == right and left in used_ids:
+                return True
+        return False
 
     @staticmethod
     def _session_size(week: int, slot_index: int, request: PlanGenerationInput, variation_seed: int) -> int:

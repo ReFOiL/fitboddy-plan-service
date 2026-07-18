@@ -2,7 +2,8 @@ from urllib.parse import quote, unquote
 
 from fastapi import HTTPException, Response, status
 
-from application.errors import IntegrationError, PlanError, UnauthorizedError
+from application.errors import IntegrationError, PlanError, UnauthorizedError, ValidationError
+from application.generation.policy import GenerationPolicyConfig
 from application.media_storage import MediaValidationError
 from application.runtime import PlanApplicationRuntime
 from presentation.http.error_translator import ErrorTranslator
@@ -10,13 +11,20 @@ from presentation.http.request_factory import PlanRequestFactory
 from presentation.http.response_factory import PlanResponseFactory
 from presentation.http.schemas import (
     AdminExerciseListResponse,
+    AdminPlatformExerciseListResponse,
     ClientExerciseLoadResponse,
     ExerciseVideoUploadResponse,
     GeneratePlanRequest,
+    GenerationPolicyResponse,
     PlanDayResponse,
+    PlatformExerciseResponse,
+    PlatformExerciseVideoUploadResponse,
+    TodayWorkoutResponse,
     TrainerExerciseResponse,
     TrainingPlanResponse,
     UpsertClientLoadRequest,
+    UpsertGenerationPolicyRequest,
+    UpsertPlatformExerciseRequest,
     UpsertTrainerExerciseRequest,
 )
 
@@ -70,6 +78,46 @@ class PlanHttpHandler:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
+    def get_today_workout(self, *, authorization: str | None) -> TodayWorkoutResponse:
+        try:
+            user = self._require_current_user(authorization)
+            with self._runtime.plan_service_scope() as plan_service:
+                workout = plan_service.get_today_workout(self._request_factory.to_get_today_command(user.user_id))
+                return self._response_factory.from_domain_today(workout)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def complete_plan_day(self, *, authorization: str | None, day_index: int) -> TodayWorkoutResponse:
+        try:
+            user = self._require_current_user(authorization)
+            with self._runtime.plan_service_scope() as plan_service:
+                workout = plan_service.complete_plan_day(
+                    self._request_factory.to_complete_day_command(user.user_id, day_index)
+                )
+                return self._response_factory.from_domain_today(workout)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def replace_plan_exercise(
+        self,
+        *,
+        authorization: str | None,
+        day_index: int,
+        line_id: str,
+    ) -> TodayWorkoutResponse:
+        try:
+            user = self._require_current_user(authorization)
+            with self._runtime.plan_service_scope() as plan_service:
+                workout = plan_service.replace_plan_exercise(
+                    self._request_factory.to_replace_exercise_command(user.user_id, day_index, line_id)
+                )
+                return self._response_factory.from_domain_today(workout)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
     def list_trainer_exercises(self, trainer_user_id: str, include_archived: bool) -> list[TrainerExerciseResponse]:
         try:
             with self._runtime.plan_service_scope() as plan_service:
@@ -86,6 +134,17 @@ class PlanHttpHandler:
             with self._runtime.plan_service_scope() as plan_service:
                 items = plan_service.list_client_loads(
                     self._request_factory.to_list_client_loads_command(client_user_id, trainer_user_id)
+                )
+                return [self._response_factory.from_domain_client_load(item) for item in items]
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def list_client_platform_loads(self, client_user_id: str) -> list[ClientExerciseLoadResponse]:
+        try:
+            with self._runtime.plan_service_scope() as plan_service:
+                items = plan_service.list_client_platform_loads(
+                    self._request_factory.to_list_client_platform_loads_command(client_user_id)
                 )
                 return [self._response_factory.from_domain_client_load(item) for item in items]
         except PlanError as exc:
@@ -110,6 +169,35 @@ class PlanHttpHandler:
                     )
                 )
                 return self._response_factory.from_domain_client_load(item)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def upsert_client_platform_load(
+        self,
+        client_user_id: str,
+        exercise_row_id: str,
+        payload: UpsertClientLoadRequest,
+    ) -> ClientExerciseLoadResponse:
+        try:
+            with self._runtime.plan_service_scope() as plan_service:
+                item = plan_service.upsert_client_platform_load(
+                    self._request_factory.to_upsert_client_platform_load_command(
+                        client_user_id,
+                        exercise_row_id,
+                        payload,
+                    )
+                )
+                return self._response_factory.from_domain_client_load(item)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def list_active_platform_exercises(self) -> list[PlatformExerciseResponse]:
+        try:
+            with self._runtime.plan_service_scope() as plan_service:
+                items = plan_service.list_active_platform_exercises()
+                return [self._response_factory.from_domain_platform_exercise(item) for item in items]
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
@@ -177,7 +265,7 @@ class PlanHttpHandler:
             if storage is None:
                 raise IntegrationError("s3 media storage is not configured")
             object_key = await storage.upload_video(
-                trainer_user_id=trainer_user_id,
+                owner_id=trainer_user_id,
                 row_id=row_id,
                 filename=filename,
                 data=data,
@@ -263,6 +351,148 @@ class PlanHttpHandler:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
+    def admin_list_platform_exercises(
+        self,
+        *,
+        authorization: str | None,
+        include_archived: bool,
+        page: int,
+        page_size: int,
+    ) -> AdminPlatformExerciseListResponse:
+        try:
+            self._require_platform_admin(authorization)
+            with self._runtime.plan_service_scope() as plan_service:
+                items, total = plan_service.list_platform_exercises(
+                    self._request_factory.to_list_platform_exercises_command(
+                        include_archived=include_archived,
+                        page=page,
+                        page_size=page_size,
+                    )
+                )
+                return AdminPlatformExerciseListResponse(
+                    items=[self._response_factory.from_domain_platform_exercise(item) for item in items],
+                    total=total,
+                    page=page,
+                    page_size=page_size,
+                )
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def admin_create_platform_exercise(
+        self,
+        *,
+        authorization: str | None,
+        payload: UpsertPlatformExerciseRequest,
+    ) -> PlatformExerciseResponse:
+        try:
+            self._require_platform_admin(authorization)
+            with self._runtime.plan_service_scope() as plan_service:
+                item = plan_service.add_platform_exercise(
+                    self._request_factory.to_add_platform_exercise_command(payload)
+                )
+                return self._response_factory.from_domain_platform_exercise(item)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def admin_get_platform_exercise(
+        self,
+        *,
+        authorization: str | None,
+        row_id: str,
+    ) -> PlatformExerciseResponse:
+        try:
+            self._require_platform_admin(authorization)
+            with self._runtime.plan_service_scope() as plan_service:
+                item = plan_service.get_platform_exercise(row_id)
+                return self._response_factory.from_domain_platform_exercise(item)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def admin_update_platform_exercise(
+        self,
+        *,
+        authorization: str | None,
+        row_id: str,
+        payload: UpsertPlatformExerciseRequest,
+    ) -> PlatformExerciseResponse:
+        try:
+            self._require_platform_admin(authorization)
+            with self._runtime.plan_service_scope() as plan_service:
+                item = plan_service.update_platform_exercise(
+                    self._request_factory.to_update_platform_exercise_command(row_id, payload)
+                )
+                return self._response_factory.from_domain_platform_exercise(item)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def admin_archive_platform_exercise(self, *, authorization: str | None, row_id: str) -> None:
+        try:
+            self._require_platform_admin(authorization)
+            with self._runtime.plan_service_scope() as plan_service:
+                plan_service.archive_platform_exercise(
+                    self._request_factory.to_archive_platform_exercise_command(row_id)
+                )
+                return
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    async def admin_upload_platform_exercise_video(
+        self,
+        *,
+        authorization: str | None,
+        row_id: str,
+        filename: str,
+        data: bytes,
+    ) -> PlatformExerciseVideoUploadResponse:
+        try:
+            self._require_platform_admin(authorization)
+            storage = self._runtime.video_storage
+            if storage is None:
+                raise IntegrationError("s3 media storage is not configured")
+            object_key = await storage.upload_video(
+                owner_id="platform",
+                row_id=row_id,
+                filename=filename,
+                data=data,
+            )
+            video_url = f"{_MEDIA_PREFIX}{quote(object_key, safe='/')}"
+            with self._runtime.plan_service_scope() as plan_service:
+                _, previous_video_url = plan_service.set_platform_exercise_video_url(row_id, video_url)
+            previous_object_key = self._extract_object_key(previous_video_url)
+            if previous_object_key and previous_object_key != object_key:
+                try:
+                    await storage.delete_media(previous_object_key)
+                except PlanError:
+                    pass
+            return PlatformExerciseVideoUploadResponse(row_id=row_id, video_url=video_url)
+        except MediaValidationError as exc:
+            self._error_translator.raise_http_error(ValidationError(str(exc)))
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    async def admin_delete_platform_exercise_video(self, *, authorization: str | None, row_id: str) -> None:
+        try:
+            self._require_platform_admin(authorization)
+            storage = self._runtime.video_storage
+            with self._runtime.plan_service_scope() as plan_service:
+                _, previous_video_url = plan_service.clear_platform_exercise_video_url(row_id)
+            object_key = self._extract_object_key(previous_video_url)
+            if object_key and storage is not None:
+                try:
+                    await storage.delete_media(object_key)
+                except PlanError:
+                    pass
+            return
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
     def admin_archive_exercise(self, *, authorization: str | None, trainer_user_id: str, row_id: str) -> None:
         try:
             self._require_platform_admin(authorization)
@@ -271,6 +501,32 @@ class PlanHttpHandler:
                     self._request_factory.to_archive_trainer_exercise_command(trainer_user_id, row_id)
                 )
                 return
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def admin_get_generation_policy(self, *, authorization: str | None) -> GenerationPolicyResponse:
+        try:
+            self._require_platform_admin(authorization)
+            with self._runtime.plan_service_scope() as plan_service:
+                config = plan_service.get_generation_policy()
+                return self._response_factory.from_generation_policy(config)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def admin_upsert_generation_policy(
+        self,
+        *,
+        authorization: str | None,
+        payload: UpsertGenerationPolicyRequest,
+    ) -> GenerationPolicyResponse:
+        try:
+            self._require_platform_admin(authorization)
+            config = GenerationPolicyConfig.from_dict(payload.model_dump())
+            with self._runtime.plan_service_scope() as plan_service:
+                saved = plan_service.upsert_generation_policy(config)
+                return self._response_factory.from_generation_policy(saved)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
@@ -301,13 +557,22 @@ class PlanHttpHandler:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
+    def _require_current_user(self, authorization: str | None):
+        token = self._extract_bearer_token(authorization)
+        return self._runtime.auth_gateway.get_current_user(token)
+
     def _require_platform_admin(self, authorization: str | None) -> None:
+        token = self._extract_bearer_token(authorization)
+        self._runtime.auth_gateway.require_platform_admin(token)
+
+    @staticmethod
+    def _extract_bearer_token(authorization: str | None) -> str:
         if authorization is None or not authorization.startswith("Bearer "):
             raise UnauthorizedError("missing bearer token")
         token = authorization.removeprefix("Bearer ").strip()
         if not token:
             raise UnauthorizedError("empty bearer token")
-        self._runtime.auth_gateway.require_platform_admin(token)
+        return token
 
     @staticmethod
     def _extract_object_key(video_url: str | None) -> str | None:

@@ -35,11 +35,11 @@ class S3MediaStorage:
             secure=self.secure,
         )
 
-    async def upload_video(self, *, trainer_user_id: str, row_id: str, filename: str, data: bytes) -> str:
+    async def upload_video(self, *, owner_id: str, row_id: str, filename: str, data: bytes) -> str:
         ext, content_type = self._validate_video(filename=filename, data=data)
         object_name = await anyio.to_thread.run_sync(
             self._generate_unique_video_object_name,
-            trainer_user_id,
+            owner_id,
             row_id,
             ext,
         )
@@ -85,9 +85,9 @@ class S3MediaStorage:
         except Exception as exc:  # pragma: no cover
             raise IntegrationError("failed to delete media from s3") from exc
 
-    def _generate_unique_video_object_name(self, trainer_user_id: str, row_id: str, ext: str) -> str:
+    def _generate_unique_video_object_name(self, owner_id: str, row_id: str, ext: str) -> str:
         for _ in range(5):
-            candidate = f"{self.videos_prefix}{trainer_user_id}/{row_id}/{uuid4().hex}{ext}"
+            candidate = f"{self.videos_prefix}{owner_id}/{row_id}/{uuid4().hex}{ext}"
             if not self._object_exists(candidate):
                 return candidate
         raise IntegrationError("failed to generate unique media key")
