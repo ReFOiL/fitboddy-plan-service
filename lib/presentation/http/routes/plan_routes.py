@@ -141,6 +141,12 @@ class PlanRoutes:
             methods=["GET"],
             response_model=list[PlatformExerciseResponse],
         )
+        self.router.add_api_route(
+            "/platform-exercises/{row_id}",
+            self.get_active_platform_exercise,
+            methods=["GET"],
+            response_model=PlatformExerciseResponse,
+        )
 
     @staticmethod
     def list_muscles(request: Request) -> list[MuscleResponse]:
@@ -283,3 +289,7 @@ class PlanRoutes:
     @staticmethod
     def list_active_platform_exercises(request: Request) -> list[PlatformExerciseResponse]:
         return request.app.state.plan_handler.list_active_platform_exercises()
+
+    @staticmethod
+    def get_active_platform_exercise(request: Request, row_id: str) -> PlatformExerciseResponse:
+        return request.app.state.plan_handler.get_active_platform_exercise(row_id)

@@ -871,6 +871,20 @@ def test_today_complete_and_replace_system_workout() -> None:
         assert blocked_replace.status_code == 409
 
 
+def test_client_can_get_active_platform_exercise_detail() -> None:
+    with _client() as client:
+        catalog = client.get("/api/v1/platform-exercises")
+        assert catalog.status_code == 200
+        assert catalog.json()
+        row_id = catalog.json()[0]["row_id"]
+        detail = client.get(f"/api/v1/platform-exercises/{row_id}")
+        assert detail.status_code == 200
+        assert detail.json()["row_id"] == row_id
+        assert detail.json()["is_active"] is True
+        missing = client.get("/api/v1/platform-exercises/does-not-exist")
+        assert missing.status_code == 404
+
+
 def test_platform_loads_affect_system_generated_plan() -> None:
     client_user_id = "client_platform_loads_1"
     working_weight = 99.5

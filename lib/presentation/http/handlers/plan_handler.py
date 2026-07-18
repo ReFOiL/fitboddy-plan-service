@@ -212,6 +212,15 @@ class PlanHttpHandler:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
+    def get_active_platform_exercise(self, row_id: str) -> PlatformExerciseResponse:
+        try:
+            with self._runtime.plan_service_scope() as plan_service:
+                item = plan_service.get_active_platform_exercise(row_id)
+                return self._response_factory.from_domain_platform_exercise(item)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
     def add_trainer_exercise(
         self,
         trainer_user_id: str,

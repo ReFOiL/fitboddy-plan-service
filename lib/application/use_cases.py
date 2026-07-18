@@ -641,6 +641,12 @@ class PlanService:
             raise PlatformExerciseNotFoundError("platform exercise not found")
         return self._mapper.platform_exercise_to_domain(model)
 
+    def get_active_platform_exercise(self, row_id: str) -> PlatformExercise:
+        exercise = self.get_platform_exercise(row_id)
+        if not exercise.is_active:
+            raise PlatformExerciseNotFoundError("platform exercise not found")
+        return exercise
+
     def add_platform_exercise(self, command: AddPlatformExerciseCommand) -> PlatformExercise:
         self._validate_exercise_fields(
             command.equipment,
