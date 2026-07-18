@@ -588,6 +588,64 @@ def test_platform_exercises_admin_crud() -> None:
         assert archived_item["is_active"] is False
 
 
+def test_list_muscles_and_exercise_muscle_targets() -> None:
+    with _client() as client:
+        muscles = client.get("/api/v1/muscles")
+        assert muscles.status_code == 200
+        catalog = muscles.json()
+        assert isinstance(catalog, list)
+        assert len(catalog) >= 30
+        assert any(item["slug"] == "chest" and item["name_ru"] for item in catalog)
+
+        _auth_as_platform_admin()
+        created = client.post(
+            "/api/v1/admin/platform-exercises",
+            json={
+                "exercise_name": "Bench with muscles",
+                "equipment": "barbell",
+                "is_cardio": False,
+                "is_hold": False,
+                "difficulty": 3,
+                "workout_category": "upper",
+                "default_sets": 3,
+                "default_reps": 8,
+                "default_rest_seconds": 90,
+                "primary_muscles": ["chest", "triceps"],
+                "secondary_muscles": ["anterior_deltoid"],
+            },
+            headers=_ADMIN_HEADERS,
+        )
+        assert created.status_code == 201
+        body = created.json()
+        assert body["primary_muscles"] == ["chest", "triceps"]
+        assert body["secondary_muscles"] == ["anterior_deltoid"]
+
+        detail = client.get(
+            f"/api/v1/admin/platform-exercises/{body['row_id']}",
+            headers=_ADMIN_HEADERS,
+        )
+        assert detail.status_code == 200
+        assert detail.json()["primary_muscles"] == ["chest", "triceps"]
+
+        unknown = client.post(
+            "/api/v1/admin/platform-exercises",
+            json={
+                "exercise_name": "Bad muscles",
+                "equipment": "none",
+                "is_cardio": False,
+                "is_hold": False,
+                "difficulty": 1,
+                "workout_category": "full_body",
+                "default_sets": 3,
+                "default_reps": 10,
+                "default_rest_seconds": 60,
+                "primary_muscles": ["not_a_real_muscle"],
+            },
+            headers=_ADMIN_HEADERS,
+        )
+        assert unknown.status_code == 422
+
+
 def test_platform_exercise_video_upload_requires_s3_configuration() -> None:
     with _client() as client:
         _auth_as_platform_admin()

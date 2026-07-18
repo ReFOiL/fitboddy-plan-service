@@ -75,7 +75,23 @@ class PlanMapper:
         )
 
     @staticmethod
+    def _muscle_lists_from_links(links: list) -> tuple[list[str], list[str]]:
+        primary_rows = sorted(
+            (link for link in links if getattr(link, "role", None) == "primary"),
+            key=lambda item: item.position,
+        )
+        secondary_rows = sorted(
+            (link for link in links if getattr(link, "role", None) == "secondary"),
+            key=lambda item: item.position,
+        )
+        return (
+            [item.muscle_slug for item in primary_rows],
+            [item.muscle_slug for item in secondary_rows],
+        )
+
+    @staticmethod
     def trainer_exercise_to_domain(exercise: TrainerExerciseModel) -> TrainerExercise:
+        primary, secondary = PlanMapper._muscle_lists_from_links(list(exercise.muscle_links or []))
         return TrainerExercise(
             row_id=exercise.row_id,
             trainer_user_id=exercise.trainer_user_id,
@@ -97,10 +113,13 @@ class PlanMapper:
             video_url=exercise.video_url,
             created_at=exercise.created_at,
             updated_at=exercise.updated_at,
+            primary_muscles=primary,
+            secondary_muscles=secondary,
         )
 
     @staticmethod
     def platform_exercise_to_domain(exercise: PlatformExerciseModel) -> PlatformExercise:
+        primary, secondary = PlanMapper._muscle_lists_from_links(list(exercise.muscle_links or []))
         return PlatformExercise(
             row_id=exercise.row_id,
             catalog_key=exercise.catalog_key,
@@ -122,6 +141,8 @@ class PlanMapper:
             video_url=exercise.video_url,
             created_at=exercise.created_at,
             updated_at=exercise.updated_at,
+            primary_muscles=primary,
+            secondary_muscles=secondary,
         )
 
     @staticmethod

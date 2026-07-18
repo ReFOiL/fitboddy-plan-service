@@ -47,6 +47,8 @@ class UpsertTrainerExerciseRequest(BaseModel):
     default_weight_kg: float | None = Field(default=None, ge=0)
     load_scheme: LoadScheme = "flat"
     scheme_steps: list[float] = Field(default_factory=list)
+    primary_muscles: list[str] = Field(default_factory=list)
+    secondary_muscles: list[str] = Field(default_factory=list)
 
 
 class UpsertPlatformExerciseRequest(BaseModel):
@@ -65,6 +67,16 @@ class UpsertPlatformExerciseRequest(BaseModel):
     load_scheme: LoadScheme = "flat"
     scheme_steps: list[float] = Field(default_factory=list)
     catalog_key: str | None = Field(default=None, max_length=64)
+    primary_muscles: list[str] = Field(default_factory=list)
+    secondary_muscles: list[str] = Field(default_factory=list)
+
+
+class MuscleResponse(BaseModel):
+    slug: str
+    name_ru: str
+    sort_order: int
+    body_view: str
+    region_key: str
 
 
 class UpsertClientLoadRequest(BaseModel):
@@ -181,6 +193,8 @@ class TrainerExerciseResponse(BaseModel):
     video_url: str | None = None
     created_at: datetime
     updated_at: datetime
+    primary_muscles: list[str] = Field(default_factory=list)
+    secondary_muscles: list[str] = Field(default_factory=list)
 
 
 class ExerciseVideoUploadResponse(BaseModel):
@@ -222,6 +236,8 @@ class PlatformExerciseResponse(BaseModel):
     video_url: str | None = None
     created_at: datetime
     updated_at: datetime
+    primary_muscles: list[str] = Field(default_factory=list)
+    secondary_muscles: list[str] = Field(default_factory=list)
 
 
 class AdminPlatformExerciseListResponse(BaseModel):

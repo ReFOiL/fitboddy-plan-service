@@ -16,6 +16,7 @@ from presentation.http.schemas import (
     ExerciseVideoUploadResponse,
     GeneratePlanRequest,
     GenerationPolicyResponse,
+    MuscleResponse,
     PlanDayResponse,
     PlatformExerciseResponse,
     PlatformExerciseVideoUploadResponse,
@@ -46,6 +47,15 @@ class PlanHttpHandler:
 
     def health(self) -> dict[str, str]:
         return {"status": "ok"}
+
+    def list_muscles(self) -> list[MuscleResponse]:
+        try:
+            with self._runtime.plan_service_scope() as plan_service:
+                items = plan_service.list_muscles()
+                return [self._response_factory.from_domain_muscle(item) for item in items]
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
 
     def ready(self) -> dict[str, str]:
         self._runtime.check_ready()

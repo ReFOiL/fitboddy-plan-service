@@ -67,6 +67,8 @@ class AddTrainerExerciseCommand:
     default_weight_kg: float | None
     load_scheme: str
     scheme_steps: list[float]
+    primary_muscles: list[str]
+    secondary_muscles: list[str]
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,8 @@ class UpdateTrainerExerciseCommand:
     default_weight_kg: float | None
     load_scheme: str
     scheme_steps: list[float]
+    primary_muscles: list[str]
+    secondary_muscles: list[str]
 
 
 @dataclass(frozen=True)
@@ -119,6 +123,8 @@ class AddPlatformExerciseCommand:
     load_scheme: str
     scheme_steps: list[float]
     catalog_key: str | None
+    primary_muscles: list[str]
+    secondary_muscles: list[str]
 
 
 @dataclass(frozen=True)
@@ -139,6 +145,8 @@ class UpdatePlatformExerciseCommand:
     load_scheme: str
     scheme_steps: list[float]
     catalog_key: str | None
+    primary_muscles: list[str]
+    secondary_muscles: list[str]
 
 
 @dataclass(frozen=True)

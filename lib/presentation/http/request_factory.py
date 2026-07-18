@@ -129,6 +129,8 @@ class PlanRequestFactory:
             default_weight_kg=payload.default_weight_kg,
             load_scheme=payload.load_scheme,
             scheme_steps=list(payload.scheme_steps),
+            primary_muscles=list(payload.primary_muscles),
+            secondary_muscles=list(payload.secondary_muscles),
         )
 
     @staticmethod
@@ -154,6 +156,8 @@ class PlanRequestFactory:
             default_weight_kg=payload.default_weight_kg,
             load_scheme=payload.load_scheme,
             scheme_steps=list(payload.scheme_steps),
+            primary_muscles=list(payload.primary_muscles),
+            secondary_muscles=list(payload.secondary_muscles),
         )
 
     @staticmethod
@@ -197,6 +201,8 @@ class PlanRequestFactory:
             load_scheme=payload.load_scheme,
             scheme_steps=list(payload.scheme_steps),
             catalog_key=payload.catalog_key,
+            primary_muscles=list(payload.primary_muscles),
+            secondary_muscles=list(payload.secondary_muscles),
         )
 
     @staticmethod
@@ -221,6 +227,8 @@ class PlanRequestFactory:
             load_scheme=payload.load_scheme,
             scheme_steps=list(payload.scheme_steps),
             catalog_key=payload.catalog_key,
+            primary_muscles=list(payload.primary_muscles),
+            secondary_muscles=list(payload.secondary_muscles),
         )
 
     @staticmethod

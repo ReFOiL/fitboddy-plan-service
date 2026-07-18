@@ -43,6 +43,7 @@ from application.models import (
     TrainerExerciseModel,
     TrainingPlanModel,
 )
+from application.muscle_catalog import is_known_muscle_slug
 from application.repositories import (
     ClientExerciseLoadRepository,
     GenerationPolicyRepository,
@@ -53,8 +54,10 @@ from application.repositories import (
     TrainerExerciseRepository,
     TrainingPlanRepository,
 )
+from application.repositories.exercise_muscles import ExerciseMuscleRepository
 from domain.entities import (
     ClientExerciseLoad,
+    Muscle,
     PlanDay,
     PlatformExercise,
     TodayWorkout,
@@ -90,10 +93,40 @@ class PlanService:
         self._platform_exercises = PlatformExerciseRepository(session)
         self._client_loads = ClientExerciseLoadRepository(session)
         self._policies = GenerationPolicyRepository(session)
+        self._exercise_muscles = ExerciseMuscleRepository(session)
         self._mapper = PlanMapper()
         self._generation_orchestrator = generation_orchestrator
         self._profile_gateway = profile_gateway
         self._require_profile_completion = require_profile_completion
+
+    def list_muscles(self) -> list[Muscle]:
+        return self._exercise_muscles.list_muscles()
+
+    def _normalize_muscle_lists(
+        self,
+        primary_muscles: list[str],
+        secondary_muscles: list[str],
+    ) -> tuple[list[str], list[str]]:
+        primary: list[str] = []
+        seen: set[str] = set()
+        for raw in primary_muscles:
+            slug = raw.strip().lower()
+            if not slug or slug in seen:
+                continue
+            if not is_known_muscle_slug(slug):
+                raise ValidationError(f"unknown muscle slug: {slug}")
+            seen.add(slug)
+            primary.append(slug)
+        secondary: list[str] = []
+        for raw in secondary_muscles:
+            slug = raw.strip().lower()
+            if not slug or slug in seen:
+                continue
+            if not is_known_muscle_slug(slug):
+                raise ValidationError(f"unknown muscle slug: {slug}")
+            seen.add(slug)
+            secondary.append(slug)
+        return primary, secondary
 
     def generate_plan(self, command: GeneratePlanCommand) -> TrainingPlan:
         if self._require_profile_completion and not self._profile_gateway.is_questionnaire_completed(command.user_id):
@@ -493,6 +526,7 @@ class PlanService:
             command.default_weight_kg,
         )
         scheme, steps = self._normalize_scheme(command.load_scheme, command.scheme_steps, command.is_hold)
+        primary, secondary = self._normalize_muscle_lists(command.primary_muscles, command.secondary_muscles)
         model = TrainerExerciseModel(
             row_id=str(uuid4()),
             trainer_user_id=command.trainer_user_id,
@@ -514,6 +548,11 @@ class PlanService:
             video_url=None,
         )
         self._trainer_exercises.add(model)
+        self._exercise_muscles.replace_trainer_muscles(
+            model.row_id,
+            primary=primary,
+            secondary=secondary,
+        )
         self._session.commit()
         self._session.refresh(model)
         return self._mapper.trainer_exercise_to_domain(model)
@@ -558,6 +597,12 @@ class PlanService:
         model.default_weight_kg = weight
         model.load_scheme = scheme
         model.scheme_steps_json = self._mapper.dumps_scheme_steps(steps)
+        primary, secondary = self._normalize_muscle_lists(command.primary_muscles, command.secondary_muscles)
+        self._exercise_muscles.replace_trainer_muscles(
+            model.row_id,
+            primary=primary,
+            secondary=secondary,
+        )
         if not model.is_active:
             model.is_active = True
         self._session.commit()
@@ -622,6 +667,7 @@ class PlanService:
             command.default_weight_kg,
         )
         scheme, steps = self._normalize_scheme(command.load_scheme, command.scheme_steps, command.is_hold)
+        primary, secondary = self._normalize_muscle_lists(command.primary_muscles, command.secondary_muscles)
         model = PlatformExerciseModel(
             row_id=str(uuid4()),
             catalog_key=catalog_key,
@@ -643,6 +689,11 @@ class PlanService:
             video_url=None,
         )
         self._platform_exercises.add(model)
+        self._exercise_muscles.replace_platform_muscles(
+            model.row_id,
+            primary=primary,
+            secondary=secondary,
+        )
         self._session.commit()
         self._session.refresh(model)
         return self._mapper.platform_exercise_to_domain(model)
@@ -693,6 +744,12 @@ class PlanService:
         model.default_weight_kg = weight
         model.load_scheme = scheme
         model.scheme_steps_json = self._mapper.dumps_scheme_steps(steps)
+        primary, secondary = self._normalize_muscle_lists(command.primary_muscles, command.secondary_muscles)
+        self._exercise_muscles.replace_platform_muscles(
+            model.row_id,
+            primary=primary,
+            secondary=secondary,
+        )
         if not model.is_active:
             model.is_active = True
         self._session.commit()

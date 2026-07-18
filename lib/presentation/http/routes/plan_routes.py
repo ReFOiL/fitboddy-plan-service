@@ -4,6 +4,7 @@ from presentation.http.schemas import (
     ClientExerciseLoadResponse,
     ExerciseVideoUploadResponse,
     GeneratePlanRequest,
+    MuscleResponse,
     PlanDayResponse,
     PlatformExerciseResponse,
     TodayWorkoutResponse,
@@ -17,6 +18,12 @@ from presentation.http.schemas import (
 class PlanRoutes:
     def __init__(self) -> None:
         self.router = APIRouter(prefix="/api/v1", tags=["plans"])
+        self.router.add_api_route(
+            "/muscles",
+            self.list_muscles,
+            methods=["GET"],
+            response_model=list[MuscleResponse],
+        )
         self.router.add_api_route(
             "/plans/generate",
             self.generate_plan,
@@ -134,6 +141,10 @@ class PlanRoutes:
             methods=["GET"],
             response_model=list[PlatformExerciseResponse],
         )
+
+    @staticmethod
+    def list_muscles(request: Request) -> list[MuscleResponse]:
+        return request.app.state.plan_handler.list_muscles()
 
     @staticmethod
     def generate_plan(request: Request, payload: GeneratePlanRequest) -> TrainingPlanResponse:

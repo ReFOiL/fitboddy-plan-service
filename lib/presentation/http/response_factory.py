@@ -1,8 +1,9 @@
 from application.generation.policy import GenerationPolicyConfig
-from domain.entities import ClientExerciseLoad, PlanDay, PlatformExercise, TodayWorkout, TrainingPlan
+from domain.entities import ClientExerciseLoad, Muscle, PlanDay, PlatformExercise, TodayWorkout, TrainingPlan
 from presentation.http.schemas import (
     ClientExerciseLoadResponse,
     GenerationPolicyResponse,
+    MuscleResponse,
     PlanDayResponse,
     PlanExerciseResponse,
     PlatformExerciseResponse,
@@ -158,4 +159,16 @@ class PlanResponseFactory:
             video_url=exercise.video_url,
             created_at=exercise.created_at,
             updated_at=exercise.updated_at,
+            primary_muscles=list(exercise.primary_muscles),
+            secondary_muscles=list(exercise.secondary_muscles),
+        )
+
+    @staticmethod
+    def from_domain_muscle(muscle: Muscle) -> MuscleResponse:
+        return MuscleResponse(
+            slug=muscle.slug,
+            name_ru=muscle.name_ru,
+            sort_order=muscle.sort_order,
+            body_view=muscle.body_view,
+            region_key=muscle.region_key,
         )

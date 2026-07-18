@@ -6,11 +6,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from application.models import PlatformExerciseModel, TrainerExerciseModel
+from application.repositories.exercise_muscles import ExerciseMuscleRepository
 
 
 class TrainerExerciseRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
+        self._muscles = ExerciseMuscleRepository(session)
 
     def list_by_trainer(self, trainer_user_id: str, *, include_archived: bool = False) -> list[TrainerExerciseModel]:
         statement = select(TrainerExerciseModel).where(TrainerExerciseModel.trainer_user_id == trainer_user_id)
@@ -69,9 +71,10 @@ class TrainerExerciseRepository:
         if existing:
             return self.list_by_trainer(trainer_user_id)
         for item in platform_rows:
+            trainer_row_id = str(uuid4())
             self._session.add(
                 TrainerExerciseModel(
-                    row_id=str(uuid4()),
+                    row_id=trainer_row_id,
                     trainer_user_id=trainer_user_id,
                     exercise_name=item.exercise_name,
                     description=item.description,
@@ -90,6 +93,11 @@ class TrainerExerciseRepository:
                     video_url=item.video_url,
                     is_active=True,
                 )
+            )
+            self._session.flush()
+            self._muscles.copy_platform_muscles_to_trainer(
+                platform_exercise_id=item.row_id,
+                trainer_exercise_id=trainer_row_id,
             )
         self._session.flush()
         return self.list_by_trainer(trainer_user_id)

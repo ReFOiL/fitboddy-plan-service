@@ -88,6 +88,8 @@ class TrainerExercise:
     video_url: str | None
     created_at: datetime
     updated_at: datetime
+    primary_muscles: list[str]
+    secondary_muscles: list[str]
 
 
 @dataclass(frozen=True)
@@ -112,6 +114,17 @@ class PlatformExercise:
     video_url: str | None
     created_at: datetime
     updated_at: datetime
+    primary_muscles: list[str]
+    secondary_muscles: list[str]
+
+
+@dataclass(frozen=True)
+class Muscle:
+    slug: str
+    name_ru: str
+    sort_order: int
+    body_view: str
+    region_key: str
 
 
 @dataclass(frozen=True)

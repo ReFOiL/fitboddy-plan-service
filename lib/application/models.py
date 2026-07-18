@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Index, Integer, PrimaryKeyConstraint, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from application.db import Base
@@ -79,6 +79,16 @@ class PlanExerciseModel(Base):
     day: Mapped[PlanDayModel] = relationship("PlanDayModel", back_populates="exercises")
 
 
+class MuscleModel(Base):
+    __tablename__ = "muscles"
+
+    slug: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name_ru: Mapped[str] = mapped_column(String(128), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    body_view: Mapped[str] = mapped_column(String(8), nullable=False)
+    region_key: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class TrainerExerciseModel(Base):
     __tablename__ = "trainer_exercises"
 
@@ -106,6 +116,12 @@ class TrainerExerciseModel(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+
+    muscle_links: Mapped[list[TrainerExerciseMuscleModel]] = relationship(  # type: ignore[name-defined]
+        "TrainerExerciseMuscleModel",
+        cascade="all, delete-orphan",
+        lazy="selectin",
     )
 
 
@@ -138,6 +154,48 @@ class PlatformExerciseModel(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+    muscle_links: Mapped[list[PlatformExerciseMuscleModel]] = relationship(  # type: ignore[name-defined]
+        "PlatformExerciseMuscleModel",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+
+class PlatformExerciseMuscleModel(Base):
+    __tablename__ = "platform_exercise_muscles"
+    __table_args__ = (PrimaryKeyConstraint("platform_exercise_id", "muscle_slug"),)
+
+    platform_exercise_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("platform_exercises.row_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    muscle_slug: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("muscles.slug", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class TrainerExerciseMuscleModel(Base):
+    __tablename__ = "trainer_exercise_muscles"
+    __table_args__ = (PrimaryKeyConstraint("trainer_exercise_id", "muscle_slug"),)
+
+    trainer_exercise_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("trainer_exercises.row_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    muscle_slug: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("muscles.slug", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class GenerationPolicyModel(Base):
