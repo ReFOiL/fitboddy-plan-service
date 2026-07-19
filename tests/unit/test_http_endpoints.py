@@ -619,6 +619,27 @@ def test_list_muscles_and_exercise_muscle_targets() -> None:
         body = created.json()
         assert body["primary_muscles"] == ["chest", "triceps"]
         assert body["secondary_muscles"] == ["anterior_deltoid"]
+        assert body["workout_category"] == "upper"
+
+        ignored_category = client.post(
+            "/api/v1/admin/platform-exercises",
+            json={
+                "exercise_name": "Squat category override",
+                "equipment": "barbell",
+                "is_cardio": False,
+                "is_hold": False,
+                "difficulty": 3,
+                "workout_category": "upper",
+                "default_sets": 3,
+                "default_reps": 8,
+                "default_rest_seconds": 90,
+                "primary_muscles": ["quadriceps", "glutes"],
+                "secondary_muscles": [],
+            },
+            headers=_ADMIN_HEADERS,
+        )
+        assert ignored_category.status_code == 201
+        assert ignored_category.json()["workout_category"] == "lower"
 
         detail = client.get(
             f"/api/v1/admin/platform-exercises/{body['row_id']}",

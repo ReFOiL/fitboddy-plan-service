@@ -5,6 +5,52 @@ from __future__ import annotations
 from typing import Literal
 
 BodyView = Literal["front", "back"]
+MuscleZone = Literal["upper", "lower", "core"]
+WorkoutCategory = Literal["upper", "lower", "core", "full_body"]
+
+# slug → body zone used to derive workout_category from primary muscles
+MUSCLE_ZONE_BY_SLUG: dict[str, MuscleZone] = {
+    "neck": "upper",
+    "traps_upper": "upper",
+    "chest_upper": "upper",
+    "chest": "upper",
+    "chest_lower": "upper",
+    "serratus": "upper",
+    "anterior_deltoid": "upper",
+    "lateral_deltoid": "upper",
+    "biceps": "upper",
+    "brachialis": "upper",
+    "forearms": "upper",
+    "abs": "core",
+    "obliques": "core",
+    "hip_flexors": "lower",
+    "quadriceps": "lower",
+    "adductors": "lower",
+    "tibialis": "lower",
+    "traps": "upper",
+    "traps_mid": "upper",
+    "rear_deltoid": "upper",
+    "rhomboids": "upper",
+    "lats": "upper",
+    "teres": "upper",
+    "lower_back": "core",
+    "triceps": "upper",
+    "glutes": "lower",
+    "hamstrings": "lower",
+    "calves": "lower",
+    "soleus": "lower",
+    "rotator_cuff": "upper",
+    "pectoralis_minor": "upper",
+    "core": "core",
+    "abductors": "lower",
+    "gastrocnemius": "lower",
+    "wrist_flexors": "upper",
+    "wrist_extensors": "upper",
+    "levator_scapulae": "upper",
+    "infraspinatus": "upper",
+    "subscapularis": "upper",
+    "brachioradialis": "upper",
+}
 
 # slug, name_ru, sort_order, body_view, region_key (SVG zone)
 MUSCLE_SEED: list[tuple[str, str, int, BodyView, str]] = [
@@ -84,3 +130,26 @@ MUSCLE_SLUGS: frozenset[str] = frozenset(item[0] for item in MUSCLE_SEED)
 
 def is_known_muscle_slug(slug: str) -> bool:
     return slug in MUSCLE_SLUGS
+
+
+def derive_workout_category(primary_muscles: list[str]) -> WorkoutCategory:
+    """Infer split category from primary muscle targets.
+
+    - single zone → that zone
+    - upper+core → upper, lower+core → lower
+    - upper+lower (or all three) / empty → full_body
+    """
+    zones: set[MuscleZone] = set()
+    for slug in primary_muscles:
+        zone = MUSCLE_ZONE_BY_SLUG.get(slug.strip().lower())
+        if zone is not None:
+            zones.add(zone)
+    if not zones:
+        return "full_body"
+    if zones == {"upper"} or zones == {"upper", "core"}:
+        return "upper"
+    if zones == {"lower"} or zones == {"lower", "core"}:
+        return "lower"
+    if zones == {"core"}:
+        return "core"
+    return "full_body"

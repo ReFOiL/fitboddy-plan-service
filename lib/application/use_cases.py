@@ -43,7 +43,7 @@ from application.models import (
     TrainerExerciseModel,
     TrainingPlanModel,
 )
-from application.muscle_catalog import is_known_muscle_slug
+from application.muscle_catalog import derive_workout_category, is_known_muscle_slug
 from application.repositories import (
     ClientExerciseLoadRepository,
     GenerationPolicyRepository,
@@ -504,10 +504,12 @@ class PlanService:
         return [self._mapper.platform_exercise_to_domain(item) for item in rows]
 
     def add_trainer_exercise(self, command: AddTrainerExerciseCommand) -> TrainerExercise:
+        primary, secondary = self._normalize_muscle_lists(command.primary_muscles, command.secondary_muscles)
+        workout_category = derive_workout_category(primary)
         self._validate_exercise_fields(
             command.equipment,
             command.difficulty,
-            command.workout_category,
+            workout_category,
             command.is_hold,
             command.default_sets,
             command.default_reps,
@@ -526,7 +528,6 @@ class PlanService:
             command.default_weight_kg,
         )
         scheme, steps = self._normalize_scheme(command.load_scheme, command.scheme_steps, command.is_hold)
-        primary, secondary = self._normalize_muscle_lists(command.primary_muscles, command.secondary_muscles)
         model = TrainerExerciseModel(
             row_id=str(uuid4()),
             trainer_user_id=command.trainer_user_id,
@@ -536,7 +537,7 @@ class PlanService:
             is_cardio=command.is_cardio,
             is_hold=command.is_hold,
             difficulty=command.difficulty,
-            workout_category=command.workout_category.strip().lower(),
+            workout_category=workout_category,
             default_sets=sets,
             default_reps=reps,
             default_duration_seconds=duration,
@@ -558,10 +559,12 @@ class PlanService:
         return self._mapper.trainer_exercise_to_domain(model)
 
     def update_trainer_exercise(self, command: UpdateTrainerExerciseCommand) -> TrainerExercise:
+        primary, secondary = self._normalize_muscle_lists(command.primary_muscles, command.secondary_muscles)
+        workout_category = derive_workout_category(primary)
         self._validate_exercise_fields(
             command.equipment,
             command.difficulty,
-            command.workout_category,
+            workout_category,
             command.is_hold,
             command.default_sets,
             command.default_reps,
@@ -589,7 +592,7 @@ class PlanService:
         model.is_cardio = command.is_cardio
         model.is_hold = command.is_hold
         model.difficulty = command.difficulty
-        model.workout_category = command.workout_category.strip().lower()
+        model.workout_category = workout_category
         model.default_sets = sets
         model.default_reps = reps
         model.default_duration_seconds = duration
@@ -597,7 +600,6 @@ class PlanService:
         model.default_weight_kg = weight
         model.load_scheme = scheme
         model.scheme_steps_json = self._mapper.dumps_scheme_steps(steps)
-        primary, secondary = self._normalize_muscle_lists(command.primary_muscles, command.secondary_muscles)
         self._exercise_muscles.replace_trainer_muscles(
             model.row_id,
             primary=primary,
@@ -648,10 +650,12 @@ class PlanService:
         return exercise
 
     def add_platform_exercise(self, command: AddPlatformExerciseCommand) -> PlatformExercise:
+        primary, secondary = self._normalize_muscle_lists(command.primary_muscles, command.secondary_muscles)
+        workout_category = derive_workout_category(primary)
         self._validate_exercise_fields(
             command.equipment,
             command.difficulty,
-            command.workout_category,
+            workout_category,
             command.is_hold,
             command.default_sets,
             command.default_reps,
@@ -673,7 +677,6 @@ class PlanService:
             command.default_weight_kg,
         )
         scheme, steps = self._normalize_scheme(command.load_scheme, command.scheme_steps, command.is_hold)
-        primary, secondary = self._normalize_muscle_lists(command.primary_muscles, command.secondary_muscles)
         model = PlatformExerciseModel(
             row_id=str(uuid4()),
             catalog_key=catalog_key,
@@ -683,7 +686,7 @@ class PlanService:
             is_cardio=command.is_cardio,
             is_hold=command.is_hold,
             difficulty=command.difficulty,
-            workout_category=command.workout_category.strip().lower(),
+            workout_category=workout_category,
             default_sets=sets,
             default_reps=reps,
             default_duration_seconds=duration,
@@ -705,10 +708,12 @@ class PlanService:
         return self._mapper.platform_exercise_to_domain(model)
 
     def update_platform_exercise(self, command: UpdatePlatformExerciseCommand) -> PlatformExercise:
+        primary, secondary = self._normalize_muscle_lists(command.primary_muscles, command.secondary_muscles)
+        workout_category = derive_workout_category(primary)
         self._validate_exercise_fields(
             command.equipment,
             command.difficulty,
-            command.workout_category,
+            workout_category,
             command.is_hold,
             command.default_sets,
             command.default_reps,
@@ -742,7 +747,7 @@ class PlanService:
         model.is_cardio = command.is_cardio
         model.is_hold = command.is_hold
         model.difficulty = command.difficulty
-        model.workout_category = command.workout_category.strip().lower()
+        model.workout_category = workout_category
         model.default_sets = sets
         model.default_reps = reps
         model.default_duration_seconds = duration
@@ -750,7 +755,6 @@ class PlanService:
         model.default_weight_kg = weight
         model.load_scheme = scheme
         model.scheme_steps_json = self._mapper.dumps_scheme_steps(steps)
-        primary, secondary = self._normalize_muscle_lists(command.primary_muscles, command.secondary_muscles)
         self._exercise_muscles.replace_platform_muscles(
             model.row_id,
             primary=primary,
