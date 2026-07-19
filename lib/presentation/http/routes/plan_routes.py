@@ -153,12 +153,20 @@ class PlanRoutes:
         return request.app.state.plan_handler.list_muscles()
 
     @staticmethod
-    def generate_plan(request: Request, payload: GeneratePlanRequest) -> TrainingPlanResponse:
-        return request.app.state.plan_handler.generate_plan(payload)
+    def generate_plan(
+        request: Request,
+        payload: GeneratePlanRequest,
+        authorization: str | None = Header(default=None),
+    ) -> TrainingPlanResponse:
+        return request.app.state.plan_handler.generate_plan(authorization=authorization, payload=payload)
 
     @staticmethod
-    def get_active_plan(request: Request, user_id: str) -> TrainingPlanResponse:
-        return request.app.state.plan_handler.get_active_plan(user_id)
+    def get_active_plan(
+        request: Request,
+        user_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> TrainingPlanResponse:
+        return request.app.state.plan_handler.get_active_plan(authorization=authorization, user_id=user_id)
 
     @staticmethod
     def get_plan_day(request: Request, plan_id: str, day_index: int) -> PlanDayResponse:
@@ -251,8 +259,17 @@ class PlanRoutes:
         return await request.app.state.plan_handler.get_media(object_key)
 
     @staticmethod
-    def list_client_loads(request: Request, client_user_id: str, trainer_user_id: str) -> list[ClientExerciseLoadResponse]:
-        return request.app.state.plan_handler.list_client_loads(client_user_id, trainer_user_id)
+    def list_client_loads(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> list[ClientExerciseLoadResponse]:
+        return request.app.state.plan_handler.list_client_loads(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+        )
 
     @staticmethod
     def upsert_client_load(
@@ -261,17 +278,26 @@ class PlanRoutes:
         trainer_user_id: str,
         exercise_row_id: str,
         payload: UpsertClientLoadRequest,
+        authorization: str | None = Header(default=None),
     ) -> ClientExerciseLoadResponse:
         return request.app.state.plan_handler.upsert_client_load(
-            client_user_id,
-            trainer_user_id,
-            exercise_row_id,
-            payload,
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            exercise_row_id=exercise_row_id,
+            payload=payload,
         )
 
     @staticmethod
-    def list_client_platform_loads(request: Request, client_user_id: str) -> list[ClientExerciseLoadResponse]:
-        return request.app.state.plan_handler.list_client_platform_loads(client_user_id)
+    def list_client_platform_loads(
+        request: Request,
+        client_user_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> list[ClientExerciseLoadResponse]:
+        return request.app.state.plan_handler.list_client_platform_loads(
+            authorization=authorization,
+            client_user_id=client_user_id,
+        )
 
     @staticmethod
     def upsert_client_platform_load(
@@ -279,11 +305,13 @@ class PlanRoutes:
         client_user_id: str,
         exercise_row_id: str,
         payload: UpsertClientLoadRequest,
+        authorization: str | None = Header(default=None),
     ) -> ClientExerciseLoadResponse:
         return request.app.state.plan_handler.upsert_client_platform_load(
-            client_user_id,
-            exercise_row_id,
-            payload,
+            authorization=authorization,
+            client_user_id=client_user_id,
+            exercise_row_id=exercise_row_id,
+            payload=payload,
         )
 
     @staticmethod

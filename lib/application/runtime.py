@@ -7,7 +7,7 @@ from sqlalchemy import text
 
 from application.config import Settings
 from application.db import DatabaseManager
-from application.gateways import AuthGateway, ProfileGateway
+from application.gateways import AuthGateway, ProfileGateway, TenantGateway
 from application.generation import build_default_generation_orchestrator
 from application.media_storage import S3MediaStorage
 from application.use_cases import PlanService
@@ -26,11 +26,19 @@ class PlanApplicationRuntime:
             http_client=self._http_client,
             profile_service_url=settings.profile_service_url,
         )
+        self._tenant_gateway = TenantGateway(
+            http_client=self._http_client,
+            tenant_service_url=settings.tenant_service_url,
+        )
         self._video_storage = self._build_video_storage(settings)
 
     @property
     def auth_gateway(self) -> AuthGateway:
         return self._auth_gateway
+
+    @property
+    def tenant_gateway(self) -> TenantGateway:
+        return self._tenant_gateway
 
     @property
     def video_storage(self) -> S3MediaStorage | None:

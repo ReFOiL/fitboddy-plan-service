@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     database_url: str = Field(default="sqlite+pysqlite:///./plan_service.db", alias="DATABASE_URL")
     alembic_ini_path: str = Field(default="alembic.ini", alias="ALEMBIC_INI_PATH")
     profile_service_url: str = Field(default="http://profile-service", alias="PROFILE_SERVICE_URL")
+    tenant_service_url: str = Field(default="http://tenant-service:8000", alias="TENANT_SERVICE_URL")
     auth_service_url: str = Field(default="http://auth-service:8000", alias="AUTH_SERVICE_URL")
     require_profile_completion: bool = Field(default=True, alias="REQUIRE_PROFILE_COMPLETION")
     http_timeout_seconds: float = Field(default=5.0, alias="HTTP_TIMEOUT_SECONDS")

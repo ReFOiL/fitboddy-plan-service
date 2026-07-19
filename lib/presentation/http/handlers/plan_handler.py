@@ -2,7 +2,8 @@ from urllib.parse import quote, unquote
 
 from fastapi import HTTPException, Response, status
 
-from application.errors import IntegrationError, PlanError, UnauthorizedError, ValidationError
+from application.errors import ForbiddenError, IntegrationError, PlanError, UnauthorizedError, ValidationError
+from application.gateways import AuthUser
 from application.generation.policy import GenerationPolicyConfig
 from application.media_storage import MediaValidationError
 from application.runtime import PlanApplicationRuntime
@@ -61,8 +62,9 @@ class PlanHttpHandler:
         self._runtime.check_ready()
         return {"status": "ready"}
 
-    def generate_plan(self, payload: GeneratePlanRequest) -> TrainingPlanResponse:
+    def generate_plan(self, *, authorization: str | None, payload: GeneratePlanRequest) -> TrainingPlanResponse:
         try:
+            self._require_generate_access(authorization, payload)
             with self._runtime.plan_service_scope() as plan_service:
                 plan = plan_service.generate_plan(self._request_factory.to_generate_command(payload))
                 return self._response_factory.from_domain_plan(plan)
@@ -70,8 +72,9 @@ class PlanHttpHandler:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
-    def get_active_plan(self, user_id: str) -> TrainingPlanResponse:
+    def get_active_plan(self, *, authorization: str | None, user_id: str) -> TrainingPlanResponse:
         try:
+            self._require_can_access_client_plan(authorization, user_id)
             with self._runtime.plan_service_scope() as plan_service:
                 plan = plan_service.get_active_plan(self._request_factory.to_get_active_command(user_id))
                 return self._response_factory.from_domain_plan(plan)
@@ -139,8 +142,15 @@ class PlanHttpHandler:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
-    def list_client_loads(self, client_user_id: str, trainer_user_id: str) -> list[ClientExerciseLoadResponse]:
+    def list_client_loads(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+    ) -> list[ClientExerciseLoadResponse]:
         try:
+            self._require_trainer_client_relation(authorization, client_user_id, trainer_user_id)
             with self._runtime.plan_service_scope() as plan_service:
                 items = plan_service.list_client_loads(
                     self._request_factory.to_list_client_loads_command(client_user_id, trainer_user_id)
@@ -150,8 +160,14 @@ class PlanHttpHandler:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
-    def list_client_platform_loads(self, client_user_id: str) -> list[ClientExerciseLoadResponse]:
+    def list_client_platform_loads(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+    ) -> list[ClientExerciseLoadResponse]:
         try:
+            self._require_self_client(authorization, client_user_id)
             with self._runtime.plan_service_scope() as plan_service:
                 items = plan_service.list_client_platform_loads(
                     self._request_factory.to_list_client_platform_loads_command(client_user_id)
@@ -163,12 +179,15 @@ class PlanHttpHandler:
 
     def upsert_client_load(
         self,
+        *,
+        authorization: str | None,
         client_user_id: str,
         trainer_user_id: str,
         exercise_row_id: str,
         payload: UpsertClientLoadRequest,
     ) -> ClientExerciseLoadResponse:
         try:
+            self._require_trainer_client_relation(authorization, client_user_id, trainer_user_id)
             with self._runtime.plan_service_scope() as plan_service:
                 item = plan_service.upsert_client_load(
                     self._request_factory.to_upsert_client_load_command(
@@ -185,11 +204,14 @@ class PlanHttpHandler:
 
     def upsert_client_platform_load(
         self,
+        *,
+        authorization: str | None,
         client_user_id: str,
         exercise_row_id: str,
         payload: UpsertClientLoadRequest,
     ) -> ClientExerciseLoadResponse:
         try:
+            self._require_self_client(authorization, client_user_id)
             with self._runtime.plan_service_scope() as plan_service:
                 item = plan_service.upsert_client_platform_load(
                     self._request_factory.to_upsert_client_platform_load_command(
@@ -576,13 +598,59 @@ class PlanHttpHandler:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
-    def _require_current_user(self, authorization: str | None):
+    def _require_current_user(self, authorization: str | None) -> AuthUser:
         token = self._extract_bearer_token(authorization)
         return self._runtime.auth_gateway.get_current_user(token)
 
     def _require_platform_admin(self, authorization: str | None) -> None:
         token = self._extract_bearer_token(authorization)
         self._runtime.auth_gateway.require_platform_admin(token)
+
+    def _require_self_client(self, authorization: str | None, client_user_id: str) -> AuthUser:
+        user = self._require_current_user(authorization)
+        if user.user_id != client_user_id:
+            raise ForbiddenError("not allowed to access another client's platform loads")
+        return user
+
+    def _require_can_access_client_plan(self, authorization: str | None, client_user_id: str) -> AuthUser:
+        user = self._require_current_user(authorization)
+        if user.user_id == client_user_id:
+            return user
+        active_trainer_id = self._runtime.tenant_gateway.get_client_active_trainer_id(client_user_id)
+        if active_trainer_id is not None and user.user_id == active_trainer_id:
+            return user
+        raise ForbiddenError("not allowed to access this client's plan")
+
+    def _require_trainer_client_relation(
+        self,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+    ) -> AuthUser:
+        user = self._require_current_user(authorization)
+        if user.user_id not in {client_user_id, trainer_user_id}:
+            raise ForbiddenError("not allowed to access these client loads")
+        active_trainer_id = self._runtime.tenant_gateway.get_client_active_trainer_id(client_user_id)
+        if active_trainer_id != trainer_user_id:
+            raise ForbiddenError("active trainer-client relation required")
+        return user
+
+    def _require_generate_access(self, authorization: str | None, payload: GeneratePlanRequest) -> AuthUser:
+        user = self._require_current_user(authorization)
+        source = (payload.source or "trainer").strip().lower()
+        if source == "system":
+            if user.user_id != payload.user_id:
+                raise ForbiddenError("system plan can only be generated for self")
+            return user
+        trainer_user_id = (payload.trainer_user_id or "").strip()
+        if not trainer_user_id:
+            raise ValidationError("trainer_user_id is required when source=trainer")
+        if user.user_id not in {payload.user_id, trainer_user_id}:
+            raise ForbiddenError("not allowed to generate plan for this client")
+        active_trainer_id = self._runtime.tenant_gateway.get_client_active_trainer_id(payload.user_id)
+        if active_trainer_id != trainer_user_id:
+            raise ForbiddenError("active trainer-client relation required")
+        return user
 
     @staticmethod
     def _extract_bearer_token(authorization: str | None) -> str:

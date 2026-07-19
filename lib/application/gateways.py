@@ -64,3 +64,29 @@ class ProfileGateway:
             raise IntegrationError("profile-service returned unexpected response")
         payload = response.json()
         return bool(payload.get("is_completed"))
+
+
+class TenantGateway:
+    def __init__(self, http_client: httpx.Client, tenant_service_url: str) -> None:
+        self._http_client = http_client
+        self._tenant_service_url = tenant_service_url.rstrip("/")
+
+    def get_client_active_trainer_id(self, client_user_id: str) -> str | None:
+        try:
+            response = self._http_client.get(
+                f"{self._tenant_service_url}/api/v1/marketplace/clients/{client_user_id}/active-relation"
+            )
+        except httpx.HTTPError as exc:
+            raise IntegrationError("tenant-service is unavailable") from exc
+
+        if response.status_code == 404:
+            return None
+        if response.status_code >= 500:
+            raise IntegrationError("tenant-service returned server error")
+        if response.status_code != 200:
+            raise IntegrationError("tenant-service returned unexpected response")
+        payload = response.json()
+        trainer_user_id = payload.get("trainer_user_id")
+        if not isinstance(trainer_user_id, str) or not trainer_user_id.strip():
+            return None
+        return trainer_user_id.strip()

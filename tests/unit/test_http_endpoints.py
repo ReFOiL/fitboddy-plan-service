@@ -6,9 +6,23 @@ from fastapi.testclient import TestClient
 from application.gateways import AuthUser
 from presentation.http.main import app
 
+_ACTIVE_RELATIONS: dict[str, str] = {}
+
+_ADMIN_HEADERS = {"Authorization": "Bearer test-admin-token"}
+_USER_HEADERS = {"Authorization": "Bearer test-user-token"}
+
 
 def _client() -> TestClient:
     return TestClient(app)
+
+
+def _install_test_stubs() -> None:
+    runtime = app.state.plan_handler._runtime
+    runtime.tenant_gateway.get_client_active_trainer_id = lambda client_id: _ACTIVE_RELATIONS.get(client_id)
+
+
+def _link(client_user_id: str, trainer_user_id: str) -> None:
+    _ACTIVE_RELATIONS[client_user_id] = trainer_user_id
 
 
 def _auth_as_platform_admin() -> None:
@@ -29,12 +43,86 @@ def _auth_as_user(user_id: str, *, role: str = "client") -> None:
     )
 
 
-_ADMIN_HEADERS = {"Authorization": "Bearer test-admin-token"}
-_USER_HEADERS = {"Authorization": "Bearer test-user-token"}
+def _auth(user_id: str, *, role: str = "client") -> dict[str, str]:
+    _auth_as_user(user_id, role=role)
+    return _USER_HEADERS
+
+
+def _generate_plan(client: TestClient, payload: dict, *, as_user: str | None = None, as_role: str | None = None):
+    user_id = payload["user_id"]
+    source = payload.get("source", "trainer")
+    if source == "system":
+        headers = _auth(as_user or user_id, role=as_role or "client")
+    else:
+        trainer_id = payload.get("trainer_user_id")
+        if trainer_id:
+            _link(user_id, trainer_id)
+        actor = as_user or user_id
+        role = as_role or ("trainer" if trainer_id and actor == trainer_id else "client")
+        headers = _auth(actor, role=role)
+    return client.post("/api/v1/plans/generate", json=payload, headers=headers)
+
+
+def _get_active(client: TestClient, user_id: str, *, as_user: str | None = None, as_role: str = "client"):
+    return client.get(
+        f"/api/v1/plans/users/{user_id}/active",
+        headers=_auth(as_user or user_id, role=as_role),
+    )
+
+
+def _put_trainer_load(
+    client: TestClient,
+    client_user_id: str,
+    trainer_user_id: str,
+    row_id: str,
+    working_weight_kg: float,
+    *,
+    as_user: str | None = None,
+    as_role: str | None = None,
+):
+    _link(client_user_id, trainer_user_id)
+    actor = as_user or client_user_id
+    role = as_role or ("trainer" if actor == trainer_user_id else "client")
+    return client.put(
+        f"/api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/loads/{row_id}",
+        json={"working_weight_kg": working_weight_kg},
+        headers=_auth(actor, role=role),
+    )
+
+
+def _list_trainer_loads(
+    client: TestClient,
+    client_user_id: str,
+    trainer_user_id: str,
+    *,
+    as_user: str | None = None,
+):
+    _link(client_user_id, trainer_user_id)
+    actor = as_user or client_user_id
+    return client.get(
+        f"/api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/loads",
+        headers=_auth(actor),
+    )
+
+
+def _put_platform_load(client: TestClient, client_user_id: str, row_id: str, working_weight_kg: float):
+    return client.put(
+        f"/api/v1/plans/clients/{client_user_id}/platform/loads/{row_id}",
+        json={"working_weight_kg": working_weight_kg},
+        headers=_auth(client_user_id),
+    )
+
+
+def _list_platform_loads(client: TestClient, client_user_id: str):
+    return client.get(
+        f"/api/v1/plans/clients/{client_user_id}/platform/loads",
+        headers=_auth(client_user_id),
+    )
 
 
 def test_health() -> None:
     with _client() as client:
+        _install_test_stubs()
         response = client.get("/health")
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
@@ -51,7 +139,8 @@ def test_generate_and_read_active_plan() -> None:
         "unavailable_equipment": ["none", "dumbbells"],
     }
     with _client() as client:
-        generate = client.post("/api/v1/plans/generate", json=payload)
+        _install_test_stubs()
+        generate = _generate_plan(client, payload)
         assert generate.status_code == 201
         body = generate.json()
         assert body["source"] == "trainer"
@@ -61,7 +150,7 @@ def test_generate_and_read_active_plan() -> None:
         assert len(body["days"]) > 0
         plan_id = body["plan_id"]
 
-        active = client.get("/api/v1/plans/users/client_1/active")
+        active = _get_active(client, "client_1")
         assert active.status_code == 200
         assert active.json()["plan_id"] == plan_id
 
@@ -73,7 +162,8 @@ def test_generate_and_read_active_plan() -> None:
 
 def test_active_plan_not_found() -> None:
     with _client() as client:
-        response = client.get("/api/v1/plans/users/unknown_user/active")
+        _install_test_stubs()
+        response = _get_active(client, "unknown_user")
         assert response.status_code == 404
 
 
@@ -97,12 +187,53 @@ def test_plan_keeps_trainer_binding() -> None:
         "unavailable_equipment": ["dumbbells", "barbell"],
     }
     with _client() as client:
-        plan_a = client.post("/api/v1/plans/generate", json=payload_a)
-        plan_b = client.post("/api/v1/plans/generate", json=payload_b)
+        _install_test_stubs()
+        plan_a = _generate_plan(client, payload_a)
+        plan_b = _generate_plan(client, payload_b)
         assert plan_a.status_code == 201
         assert plan_b.status_code == 201
         assert plan_a.json()["trainer_user_id"] == "trainer_a"
         assert plan_b.json()["trainer_user_id"] == "trainer_b"
+
+
+def test_generate_forbidden_without_relation() -> None:
+    payload = {
+        "trainer_user_id": "trainer_forbidden",
+        "user_id": "client_forbidden",
+        "goal": "maintenance",
+        "level": "beginner",
+        "workout_location": "home",
+        "workouts_per_week": 3,
+        "unavailable_equipment": [],
+    }
+    with _client() as client:
+        _install_test_stubs()
+        # relation not linked
+        response = client.post(
+            "/api/v1/plans/generate",
+            json=payload,
+            headers=_auth("client_forbidden"),
+        )
+        assert response.status_code == 403
+
+
+def test_trainer_can_generate_for_linked_client() -> None:
+    payload = {
+        "trainer_user_id": "trainer_cockpit_1",
+        "user_id": "client_cockpit_1",
+        "goal": "maintenance",
+        "level": "intermediate",
+        "workout_location": "gym",
+        "workouts_per_week": 3,
+        "unavailable_equipment": [],
+    }
+    with _client() as client:
+        _install_test_stubs()
+        generated = _generate_plan(client, payload, as_user="trainer_cockpit_1", as_role="trainer")
+        assert generated.status_code == 201
+        active = _get_active(client, "client_cockpit_1", as_user="trainer_cockpit_1", as_role="trainer")
+        assert active.status_code == 200
+        assert active.json()["plan_id"] == generated.json()["plan_id"]
 
 
 def test_trainer_catalog_crud() -> None:
@@ -117,6 +248,7 @@ def test_trainer_catalog_crud() -> None:
         "workout_category": "lower",
     }
     with _client() as client:
+        _install_test_stubs()
         created = client.post(
             f"/api/v1/trainers/{trainer_user_id}/exercises",
             json=create_payload,
@@ -178,6 +310,7 @@ def test_exercise_video_upload_requires_s3_configuration() -> None:
         "workout_category": "lower",
     }
     with _client() as client:
+        _install_test_stubs()
         created = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
         assert created.status_code == 201
         row_id = created.json()["row_id"]
@@ -219,6 +352,7 @@ def test_exercise_video_upload_and_delete_success() -> None:
         "workout_category": "upper",
     }
     with _client() as client:
+        _install_test_stubs()
         created = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
         assert created.status_code == 201
         row_id = created.json()["row_id"]
@@ -267,6 +401,7 @@ def test_trainer_catalog_allows_same_name_twice() -> None:
         "workout_category": "full_body",
     }
     with _client() as client:
+        _install_test_stubs()
         first = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
         second = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
         assert first.status_code == 201
@@ -285,6 +420,7 @@ def test_trainer_catalog_rejects_cardio_workout_category() -> None:
         "workout_category": "cardio",
     }
     with _client() as client:
+        _install_test_stubs()
         response = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
         assert response.status_code == 422
 
@@ -292,6 +428,7 @@ def test_trainer_catalog_rejects_cardio_workout_category() -> None:
 def test_trainer_catalog_auto_seeds_baseline_for_new_trainer() -> None:
     trainer_user_id = "trainer_new_baseline"
     with _client() as client:
+        _install_test_stubs()
         listed = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises")
         assert listed.status_code == 200
         body = listed.json()
@@ -307,6 +444,7 @@ def test_trainer_baseline_copies_from_platform_catalog() -> None:
     from application.models import PlatformExerciseModel
 
     with _client() as client:
+        _install_test_stubs()
         listed = client.get("/api/v1/trainers/trainer_from_platform/exercises")
         assert listed.status_code == 200
         trainer_names = {item["exercise_name"] for item in listed.json()}
@@ -330,6 +468,7 @@ def test_trainer_baseline_copies_from_platform_catalog() -> None:
 
 def test_generate_plan_requires_completed_questionnaire_when_guard_enabled() -> None:
     with _client() as client:
+        _install_test_stubs()
         runtime = app.state.plan_handler._runtime
         runtime._settings.require_profile_completion = True
         runtime._profile_gateway.is_questionnaire_completed = lambda _user_id: False
@@ -342,7 +481,7 @@ def test_generate_plan_requires_completed_questionnaire_when_guard_enabled() -> 
             "workouts_per_week": 3,
             "unavailable_equipment": ["none"],
         }
-        response = client.post("/api/v1/plans/generate", json=payload)
+        response = _generate_plan(client, payload)
         assert response.status_code == 422
         assert "questionnaire is incomplete" in response.json()["detail"]
         runtime._settings.require_profile_completion = False
@@ -352,6 +491,7 @@ def test_client_loads_and_scheme_affect_generated_plan() -> None:
     trainer_user_id = "trainer_loads_1"
     client_user_id = "client_loads_1"
     with _client() as client:
+        _install_test_stubs()
         created = client.post(
             f"/api/v1/trainers/{trainer_user_id}/exercises",
             json={
@@ -372,20 +512,15 @@ def test_client_loads_and_scheme_affect_generated_plan() -> None:
         row_id = created.json()["row_id"]
         assert created.json()["load_scheme"] == "ascending"
 
-        load = client.put(
-            f"/api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/loads/{row_id}",
-            json={"working_weight_kg": 100},
-        )
+        load = _put_trainer_load(client, client_user_id, trainer_user_id, row_id, 100)
         assert load.status_code == 200
         assert load.json()["working_weight_kg"] == 100
 
-        listed_loads = client.get(f"/api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/loads")
+        listed_loads = _list_trainer_loads(client, client_user_id, trainer_user_id)
         assert listed_loads.status_code == 200
         assert any(item["exercise_row_id"] == row_id for item in listed_loads.json())
 
-        generated = client.post(
-            "/api/v1/plans/generate",
-            json={
+        generated = _generate_plan(client, {
                 "trainer_user_id": trainer_user_id,
                 "user_id": client_user_id,
                 "goal": "maintenance",
@@ -393,8 +528,7 @@ def test_client_loads_and_scheme_affect_generated_plan() -> None:
                 "workout_location": "gym",
                 "workouts_per_week": 3,
                 "unavailable_equipment": [],
-            },
-        )
+            })
         assert generated.status_code == 201
         exercises = [
             exercise
@@ -414,6 +548,7 @@ def test_upsert_load_patches_incomplete_active_plan_days() -> None:
     trainer_user_id = "trainer_reactive_weights_1"
     client_user_id = "client_reactive_weights_1"
     with _client() as client:
+        _install_test_stubs()
         created = client.post(
             f"/api/v1/trainers/{trainer_user_id}/exercises",
             json={
@@ -433,15 +568,10 @@ def test_upsert_load_patches_incomplete_active_plan_days() -> None:
         assert created.status_code == 201
         row_id = created.json()["row_id"]
 
-        load = client.put(
-            f"/api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/loads/{row_id}",
-            json={"working_weight_kg": 100},
-        )
+        load = _put_trainer_load(client, client_user_id, trainer_user_id, row_id, 100)
         assert load.status_code == 200
 
-        generated = client.post(
-            "/api/v1/plans/generate",
-            json={
+        generated = _generate_plan(client, {
                 "trainer_user_id": trainer_user_id,
                 "user_id": client_user_id,
                 "goal": "maintenance",
@@ -449,8 +579,7 @@ def test_upsert_load_patches_incomplete_active_plan_days() -> None:
                 "workout_location": "gym",
                 "workouts_per_week": 3,
                 "unavailable_equipment": [],
-            },
-        )
+            })
         assert generated.status_code == 201
         plan = generated.json()
         days_with_exercise = [
@@ -467,13 +596,10 @@ def test_upsert_load_patches_incomplete_active_plan_days() -> None:
         )
         assert completed.status_code == 200
 
-        updated = client.put(
-            f"/api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/loads/{row_id}",
-            json={"working_weight_kg": 120},
-        )
+        updated = _put_trainer_load(client, client_user_id, trainer_user_id, row_id, 120)
         assert updated.status_code == 200
 
-        active = client.get(f"/api/v1/plans/users/{client_user_id}/active")
+        active = _get_active(client, client_user_id)
         assert active.status_code == 200
         active_days = {day["day_index"]: day for day in active.json()["days"]}
 
@@ -494,9 +620,8 @@ def test_replace_plan_exercise_applies_new_exercise_load() -> None:
     client_user_id = "client_replace_load_1"
     replacement_weight = 77.5
     with _client() as client:
-        generated = client.post(
-            "/api/v1/plans/generate",
-            json={
+        _install_test_stubs()
+        generated = _generate_plan(client, {
                 "source": "system",
                 "user_id": client_user_id,
                 "goal": "weight_loss",
@@ -504,8 +629,7 @@ def test_replace_plan_exercise_applies_new_exercise_load() -> None:
                 "workout_location": "home",
                 "workouts_per_week": 3,
                 "unavailable_equipment": ["dumbbells", "barbell"],
-            },
-        )
+            })
         assert generated.status_code == 201
         target_day = next(day for day in generated.json()["days"] if day["exercises"])
         line = next(ex for ex in target_day["exercises"] if not ex["is_cardio"])
@@ -520,10 +644,7 @@ def test_replace_plan_exercise_applies_new_exercise_load() -> None:
                 continue
             if item["row_id"] == previous_id or item["row_id"] in day_exercise_ids:
                 continue
-            load = client.put(
-                f"/api/v1/plans/clients/{client_user_id}/platform/loads/{item['row_id']}",
-                json={"working_weight_kg": replacement_weight},
-            )
+            load = _put_platform_load(client, client_user_id, item["row_id"], replacement_weight)
             assert load.status_code == 200
             candidates_loaded += 1
         assert candidates_loaded > 0
@@ -545,6 +666,7 @@ def test_unavailable_equipment_excludes_matching_exercises() -> None:
     trainer_user_id = "trainer_excl_1"
     client_user_id = "client_excl_1"
     with _client() as client:
+        _install_test_stubs()
         barbell = client.post(
             f"/api/v1/trainers/{trainer_user_id}/exercises",
             json={
@@ -595,9 +717,7 @@ def test_unavailable_equipment_excludes_matching_exercises() -> None:
         air_bike_id = custom.json()["row_id"]
         assert custom.json()["equipment"] == "Аэробайк"
 
-        excluded = client.post(
-            "/api/v1/plans/generate",
-            json={
+        excluded = _generate_plan(client, {
                 "trainer_user_id": trainer_user_id,
                 "user_id": client_user_id,
                 "goal": "maintenance",
@@ -605,8 +725,7 @@ def test_unavailable_equipment_excludes_matching_exercises() -> None:
                 "workout_location": "gym",
                 "workouts_per_week": 3,
                 "unavailable_equipment": ["barbell"],
-            },
-        )
+            })
         assert excluded.status_code == 201
         exercise_ids = {
             exercise["exercise_id"]
@@ -616,9 +735,7 @@ def test_unavailable_equipment_excludes_matching_exercises() -> None:
         assert barbell_id not in exercise_ids
         assert bodyweight_id in exercise_ids or air_bike_id in exercise_ids
 
-        without_air = client.post(
-            "/api/v1/plans/generate",
-            json={
+        without_air = _generate_plan(client, {
                 "trainer_user_id": trainer_user_id,
                 "user_id": f"{client_user_id}_2",
                 "goal": "endurance",
@@ -626,8 +743,7 @@ def test_unavailable_equipment_excludes_matching_exercises() -> None:
                 "workout_location": "gym",
                 "workouts_per_week": 3,
                 "unavailable_equipment": ["аэробайк"],
-            },
-        )
+            })
         assert without_air.status_code == 201
         air_ids = {
             exercise["exercise_id"]
@@ -652,6 +768,7 @@ def test_platform_exercises_admin_crud() -> None:
         "default_rest_seconds": 60,
     }
     with _client() as client:
+        _install_test_stubs()
         _auth_as_platform_admin()
 
         unauthorized = client.get("/api/v1/admin/platform-exercises")
@@ -721,6 +838,7 @@ def test_platform_exercises_admin_crud() -> None:
 
 def test_list_muscles_and_exercise_muscle_targets() -> None:
     with _client() as client:
+        _install_test_stubs()
         muscles = client.get("/api/v1/muscles")
         assert muscles.status_code == 200
         catalog = muscles.json()
@@ -800,6 +918,7 @@ def test_list_muscles_and_exercise_muscle_targets() -> None:
 
 def test_platform_exercise_video_upload_requires_s3_configuration() -> None:
     with _client() as client:
+        _install_test_stubs()
         _auth_as_platform_admin()
         created = client.post(
             "/api/v1/admin/platform-exercises",
@@ -836,7 +955,8 @@ def test_generate_system_plan_without_trainer() -> None:
         "unavailable_equipment": ["dumbbells", "barbell"],
     }
     with _client() as client:
-        generate = client.post("/api/v1/plans/generate", json=payload)
+        _install_test_stubs()
+        generate = _generate_plan(client, payload)
         assert generate.status_code == 201
         body = generate.json()
         assert body["source"] == "system"
@@ -845,7 +965,7 @@ def test_generate_system_plan_without_trainer() -> None:
         assert body["status"] == "active"
         assert len(body["days"]) > 0
 
-        active = client.get("/api/v1/plans/users/client_system_1/active")
+        active = _get_active(client, "client_system_1")
         assert active.status_code == 200
         assert active.json()["source"] == "system"
         assert active.json()["trainer_user_id"] is None
@@ -863,7 +983,8 @@ def test_generate_system_rejects_trainer_user_id() -> None:
         "workouts_per_week": 3,
     }
     with _client() as client:
-        response = client.post("/api/v1/plans/generate", json=payload)
+        _install_test_stubs()
+        response = _generate_plan(client, payload)
         assert response.status_code == 422
 
 
@@ -877,15 +998,15 @@ def test_generate_trainer_requires_trainer_user_id() -> None:
         "workouts_per_week": 3,
     }
     with _client() as client:
-        response = client.post("/api/v1/plans/generate", json=payload)
+        _install_test_stubs()
+        response = _generate_plan(client, payload)
         assert response.status_code == 422
 
 
 def test_generate_system_replaces_previous_trainer_plan() -> None:
     with _client() as client:
-        trainer_plan = client.post(
-            "/api/v1/plans/generate",
-            json={
+        _install_test_stubs()
+        trainer_plan = _generate_plan(client, {
                 "source": "trainer",
                 "trainer_user_id": "trainer_switch_1",
                 "user_id": "client_switch_1",
@@ -893,27 +1014,23 @@ def test_generate_system_replaces_previous_trainer_plan() -> None:
                 "level": "intermediate",
                 "workout_location": "gym",
                 "workouts_per_week": 3,
-            },
-        )
+            })
         assert trainer_plan.status_code == 201
         trainer_plan_id = trainer_plan.json()["plan_id"]
 
-        system_plan = client.post(
-            "/api/v1/plans/generate",
-            json={
+        system_plan = _generate_plan(client, {
                 "source": "system",
                 "user_id": "client_switch_1",
                 "goal": "weight_loss",
                 "level": "beginner",
                 "workout_location": "home",
                 "workouts_per_week": 3,
-            },
-        )
+            })
         assert system_plan.status_code == 201
         assert system_plan.json()["source"] == "system"
         assert system_plan.json()["plan_id"] != trainer_plan_id
 
-        active = client.get("/api/v1/plans/users/client_switch_1/active")
+        active = _get_active(client, "client_switch_1")
         assert active.status_code == 200
         assert active.json()["plan_id"] == system_plan.json()["plan_id"]
         assert active.json()["source"] == "system"
@@ -930,7 +1047,8 @@ def test_generate_trainer_compat_without_source_field() -> None:
         "workouts_per_week": 3,
     }
     with _client() as client:
-        response = client.post("/api/v1/plans/generate", json=payload)
+        _install_test_stubs()
+        response = _generate_plan(client, payload)
         assert response.status_code == 201
         assert response.json()["source"] == "trainer"
         assert response.json()["trainer_user_id"] == "trainer_compat_1"
@@ -938,6 +1056,7 @@ def test_generate_trainer_compat_without_source_field() -> None:
 
 def test_new_trainer_clones_support_added_platform_exercise() -> None:
     with _client() as client:
+        _install_test_stubs()
         _auth_as_platform_admin()
         created = client.post(
             "/api/v1/admin/platform-exercises",
@@ -963,10 +1082,9 @@ def test_new_trainer_clones_support_added_platform_exercise() -> None:
 def test_today_complete_and_replace_system_workout() -> None:
     user_id = "client_today_1"
     with _client() as client:
+        _install_test_stubs()
         _auth_as_user(user_id)
-        generated = client.post(
-            "/api/v1/plans/generate",
-            json={
+        generated = _generate_plan(client, {
                 "source": "system",
                 "user_id": user_id,
                 "goal": "weight_loss",
@@ -974,8 +1092,7 @@ def test_today_complete_and_replace_system_workout() -> None:
                 "workout_location": "home",
                 "workouts_per_week": 3,
                 "unavailable_equipment": ["dumbbells", "barbell"],
-            },
-        )
+            })
         assert generated.status_code == 201
         plan = generated.json()
         workout_day = next(day for day in plan["days"] if day["exercises"])
@@ -1025,6 +1142,7 @@ def test_today_complete_and_replace_system_workout() -> None:
 
 def test_client_can_get_active_platform_exercise_detail() -> None:
     with _client() as client:
+        _install_test_stubs()
         catalog = client.get("/api/v1/platform-exercises")
         assert catalog.status_code == 200
         assert catalog.json()
@@ -1041,6 +1159,7 @@ def test_platform_loads_affect_system_generated_plan() -> None:
     client_user_id = "client_platform_loads_1"
     working_weight = 99.5
     with _client() as client:
+        _install_test_stubs()
         catalog = client.get("/api/v1/platform-exercises")
         assert catalog.status_code == 200
         weighted = [
@@ -1054,21 +1173,16 @@ def test_platform_loads_affect_system_generated_plan() -> None:
         assert weighted
         target_ids = {item["row_id"] for item in weighted}
         for item in weighted:
-            load = client.put(
-                f"/api/v1/plans/clients/{client_user_id}/platform/loads/{item['row_id']}",
-                json={"working_weight_kg": working_weight},
-            )
+            load = _put_platform_load(client, client_user_id, item["row_id"], working_weight)
             assert load.status_code == 200
             assert load.json()["exercise_scope"] == "platform"
             assert load.json()["trainer_user_id"] is None
 
-        listed = client.get(f"/api/v1/plans/clients/{client_user_id}/platform/loads")
+        listed = _list_platform_loads(client, client_user_id)
         assert listed.status_code == 200
         assert len(listed.json()) == len(weighted)
 
-        generated = client.post(
-            "/api/v1/plans/generate",
-            json={
+        generated = _generate_plan(client, {
                 "source": "system",
                 "user_id": client_user_id,
                 "goal": "maintenance",
@@ -1076,8 +1190,7 @@ def test_platform_loads_affect_system_generated_plan() -> None:
                 "workout_location": "gym",
                 "workouts_per_week": 3,
                 "unavailable_equipment": [],
-            },
-        )
+            })
         assert generated.status_code == 201
         exercises = [
             exercise
@@ -1094,6 +1207,7 @@ def test_platform_loads_affect_system_generated_plan() -> None:
 
 def test_generation_policy_get_and_put() -> None:
     with _client() as client:
+        _install_test_stubs()
         _auth_as_platform_admin()
         fetched = client.get("/api/v1/admin/generation-policy", headers=_ADMIN_HEADERS)
         assert fetched.status_code == 200
@@ -1120,9 +1234,7 @@ def test_generation_policy_get_and_put() -> None:
         assert updated.status_code == 200
         assert updated.json()["default_workouts_per_week"]["beginner"] == 2
 
-        system_plan = client.post(
-            "/api/v1/plans/generate",
-            json={
+        system_plan = _generate_plan(client, {
                 "source": "system",
                 "user_id": "client_policy_wpw_1",
                 "goal": "maintenance",
@@ -1130,8 +1242,7 @@ def test_generation_policy_get_and_put() -> None:
                 "workout_location": "home",
                 "workouts_per_week": 3,
                 "unavailable_equipment": ["dumbbells", "barbell"],
-            },
-        )
+            })
         assert system_plan.status_code == 201
         assert system_plan.json()["workouts_per_week"] == 2
 
@@ -1139,17 +1250,15 @@ def test_generation_policy_get_and_put() -> None:
 def test_regenerate_uses_adherence_to_adjust_frequency() -> None:
     user_id = "client_adherence_1"
     with _client() as client:
-        first = client.post(
-            "/api/v1/plans/generate",
-            json={
+        _install_test_stubs()
+        first = _generate_plan(client, {
                 "source": "system",
                 "user_id": user_id,
                 "goal": "maintenance",
                 "level": "intermediate",
                 "workout_location": "gym",
                 "workouts_per_week": 3,
-            },
-        )
+            })
         assert first.status_code == 201
         plan = first.json()
         assert plan["workouts_per_week"] == 3
@@ -1163,17 +1272,14 @@ def test_regenerate_uses_adherence_to_adjust_frequency() -> None:
             )
             assert completed.status_code == 200
 
-        second = client.post(
-            "/api/v1/plans/generate",
-            json={
+        second = _generate_plan(client, {
                 "source": "system",
                 "user_id": user_id,
                 "goal": "maintenance",
                 "level": "intermediate",
                 "workout_location": "gym",
                 "workouts_per_week": 3,
-            },
-        )
+            })
         assert second.status_code == 201
         assert second.json()["previous_adherence"] == 1.0
         assert second.json()["workouts_per_week"] == 4
@@ -1181,21 +1287,25 @@ def test_regenerate_uses_adherence_to_adjust_frequency() -> None:
 
 def test_platform_load_rejects_unknown_exercise() -> None:
     with _client() as client:
+        _install_test_stubs()
         response = client.put(
             "/api/v1/plans/clients/client_bad_platform_load/platform/loads/missing-row",
             json={"working_weight_kg": 40},
+            headers=_auth("client_bad_platform_load"),
         )
         assert response.status_code == 404
 
 
 def test_today_requires_auth() -> None:
     with _client() as client:
+        _install_test_stubs()
         response = client.get("/api/v1/plans/me/today")
         assert response.status_code == 401
 
 
 def test_today_not_found_without_plan() -> None:
     with _client() as client:
+        _install_test_stubs()
         _auth_as_user("client_no_plan_today")
         response = client.get("/api/v1/plans/me/today", headers=_USER_HEADERS)
         assert response.status_code == 404
