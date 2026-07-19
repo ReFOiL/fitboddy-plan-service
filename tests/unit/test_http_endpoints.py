@@ -410,6 +410,137 @@ def test_client_loads_and_scheme_affect_generated_plan() -> None:
         assert sample["set_prescriptions"][-1]["weight_kg"] == 100
 
 
+def test_upsert_load_patches_incomplete_active_plan_days() -> None:
+    trainer_user_id = "trainer_reactive_weights_1"
+    client_user_id = "client_reactive_weights_1"
+    with _client() as client:
+        created = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            json={
+                "exercise_name": "Жим реактивный",
+                "equipment": "barbell",
+                "is_cardio": False,
+                "is_hold": False,
+                "difficulty": 3,
+                "workout_category": "upper",
+                "default_sets": 3,
+                "default_reps": 6,
+                "default_rest_seconds": 90,
+                "default_weight_kg": 40,
+                "load_scheme": "ascending",
+            },
+        )
+        assert created.status_code == 201
+        row_id = created.json()["row_id"]
+
+        load = client.put(
+            f"/api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/loads/{row_id}",
+            json={"working_weight_kg": 100},
+        )
+        assert load.status_code == 200
+
+        generated = client.post(
+            "/api/v1/plans/generate",
+            json={
+                "trainer_user_id": trainer_user_id,
+                "user_id": client_user_id,
+                "goal": "maintenance",
+                "level": "intermediate",
+                "workout_location": "gym",
+                "workouts_per_week": 3,
+                "unavailable_equipment": [],
+            },
+        )
+        assert generated.status_code == 201
+        plan = generated.json()
+        days_with_exercise = [
+            day for day in plan["days"] if any(ex["exercise_id"] == row_id for ex in day["exercises"])
+        ]
+        assert len(days_with_exercise) >= 2
+        completed_day = days_with_exercise[0]
+        incomplete_day = days_with_exercise[1]
+
+        _auth_as_user(client_user_id)
+        completed = client.post(
+            f"/api/v1/plans/me/days/{completed_day['day_index']}/complete",
+            headers=_USER_HEADERS,
+        )
+        assert completed.status_code == 200
+
+        updated = client.put(
+            f"/api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/loads/{row_id}",
+            json={"working_weight_kg": 120},
+        )
+        assert updated.status_code == 200
+
+        active = client.get(f"/api/v1/plans/users/{client_user_id}/active")
+        assert active.status_code == 200
+        active_days = {day["day_index"]: day for day in active.json()["days"]}
+
+        completed_lines = [
+            ex for ex in active_days[completed_day["day_index"]]["exercises"] if ex["exercise_id"] == row_id
+        ]
+        incomplete_lines = [
+            ex for ex in active_days[incomplete_day["day_index"]]["exercises"] if ex["exercise_id"] == row_id
+        ]
+        assert completed_lines
+        assert incomplete_lines
+        assert completed_lines[0]["weight_kg"] == 100
+        assert incomplete_lines[0]["weight_kg"] == 120
+        assert incomplete_lines[0]["set_prescriptions"][-1]["weight_kg"] == 120
+
+
+def test_replace_plan_exercise_applies_new_exercise_load() -> None:
+    client_user_id = "client_replace_load_1"
+    replacement_weight = 77.5
+    with _client() as client:
+        generated = client.post(
+            "/api/v1/plans/generate",
+            json={
+                "source": "system",
+                "user_id": client_user_id,
+                "goal": "weight_loss",
+                "level": "beginner",
+                "workout_location": "home",
+                "workouts_per_week": 3,
+                "unavailable_equipment": ["dumbbells", "barbell"],
+            },
+        )
+        assert generated.status_code == 201
+        target_day = next(day for day in generated.json()["days"] if day["exercises"])
+        line = next(ex for ex in target_day["exercises"] if not ex["is_cardio"])
+        previous_id = line["exercise_id"]
+        day_exercise_ids = {ex["exercise_id"] for ex in target_day["exercises"]}
+
+        catalog = client.get("/api/v1/platform-exercises")
+        assert catalog.status_code == 200
+        candidates_loaded = 0
+        for item in catalog.json():
+            if not item.get("is_active") or item.get("is_cardio"):
+                continue
+            if item["row_id"] == previous_id or item["row_id"] in day_exercise_ids:
+                continue
+            load = client.put(
+                f"/api/v1/plans/clients/{client_user_id}/platform/loads/{item['row_id']}",
+                json={"working_weight_kg": replacement_weight},
+            )
+            assert load.status_code == 200
+            candidates_loaded += 1
+        assert candidates_loaded > 0
+
+        _auth_as_user(client_user_id)
+        replaced = client.post(
+            f"/api/v1/plans/me/days/{target_day['day_index']}/exercises/{line['line_id']}/replace",
+            headers=_USER_HEADERS,
+        )
+        assert replaced.status_code == 200, replaced.text
+        replaced_line = next(item for item in replaced.json()["exercises"] if item["line_id"] == line["line_id"])
+        assert replaced_line["exercise_id"] != previous_id
+        assert replaced_line["weight_kg"] == replacement_weight
+        assert replaced_line["set_prescriptions"]
+        assert replaced_line["set_prescriptions"][-1]["weight_kg"] == replacement_weight
+
+
 def test_unavailable_equipment_excludes_matching_exercises() -> None:
     trainer_user_id = "trainer_excl_1"
     client_user_id = "client_excl_1"

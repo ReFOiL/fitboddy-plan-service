@@ -55,6 +55,8 @@ from application.repositories import (
     TrainingPlanRepository,
 )
 from application.repositories.exercise_muscles import ExerciseMuscleRepository
+from application.repositories.serialization import dumps_set_prescriptions, parse_scheme_steps, parse_set_prescriptions
+from application.weight_prescription import build_prescriptions, rescale_plan_line_weights
 from domain.entities import (
     ClientExerciseLoad,
     Muscle,
@@ -353,10 +355,46 @@ class PlanService:
         if replacement is None:
             raise ValidationError("no replacement exercise available")
 
-        line.exercise_id = replacement["exercise_id"]
-        line.exercise_name = replacement["exercise_name"]
-        line.category = replacement["category"]
-        line.is_cardio = replacement["is_cardio"]
+        line.exercise_id = str(replacement["exercise_id"])
+        line.exercise_name = str(replacement["exercise_name"])
+        line.category = str(replacement["category"])
+        line.is_cardio = bool(replacement["is_cardio"])
+
+        is_hold = bool(replacement["is_hold"])
+        if is_hold:
+            line.reps = None
+            if line.duration_seconds is None:
+                line.duration_seconds = int(replacement["default_duration_seconds"] or 35)
+        else:
+            line.duration_seconds = None
+            if line.reps is None:
+                line.reps = int(replacement["default_reps"] or 10)
+        if line.sets is None:
+            line.sets = int(replacement["default_sets"] or 3)
+        if line.rest_seconds is None:
+            line.rest_seconds = int(replacement["default_rest_seconds"] or 60)
+
+        working_weight = self._resolve_working_weight_for_plan(
+            plan=plan,
+            exercise_row_id=line.exercise_id,
+            default_weight_kg=replacement.get("default_weight_kg"),
+        )
+        result = build_prescriptions(
+            working_weight=working_weight,
+            sets=line.sets or int(replacement["default_sets"] or 3),
+            load_scheme=str(replacement["load_scheme"]),
+            scheme_steps=list(replacement["scheme_steps"]),  # type: ignore[arg-type]
+            is_hold=is_hold,
+            reps=line.reps,
+            duration_seconds=line.duration_seconds,
+            rest_seconds=line.rest_seconds,
+        )
+        line.sets = line.sets or int(replacement["default_sets"] or 3)
+        line.weight_kg = result.weight_kg
+        if is_hold:
+            line.duration_seconds = result.duration_seconds
+        line.set_prescriptions_json = dumps_set_prescriptions(list(result.set_prescriptions))
+
         self._session.commit()
         self._session.refresh(day)
         return TodayWorkout(
@@ -379,27 +417,13 @@ class PlanService:
         candidates: list[dict[str, object]] = []
         if plan_source == "system":
             for item in self._platform_exercises.list_all(include_archived=False):
-                candidates.append(
-                    {
-                        "exercise_id": item.row_id,
-                        "exercise_name": item.exercise_name,
-                        "category": item.workout_category,
-                        "is_cardio": item.is_cardio,
-                    }
-                )
+                candidates.append(self._catalog_exercise_as_replacement(item))
         else:
             if not trainer_user_id:
                 return None
             self._ensure_trainer_catalog_baseline(trainer_user_id)
             for item in self._trainer_exercises.list_by_trainer(trainer_user_id, include_archived=False):
-                candidates.append(
-                    {
-                        "exercise_id": item.row_id,
-                        "exercise_name": item.exercise_name,
-                        "category": item.workout_category,
-                        "is_cardio": item.is_cardio,
-                    }
-                )
+                candidates.append(self._catalog_exercise_as_replacement(item))
 
         primary = [
             item
@@ -428,6 +452,99 @@ class PlanService:
             )
         ]
         return fallback[0] if fallback else None
+
+    @staticmethod
+    def _catalog_exercise_as_replacement(
+        item: TrainerExerciseModel | PlatformExerciseModel,
+    ) -> dict[str, object]:
+        return {
+            "exercise_id": item.row_id,
+            "exercise_name": item.exercise_name,
+            "category": item.workout_category,
+            "is_cardio": item.is_cardio,
+            "is_hold": item.is_hold,
+            "load_scheme": item.load_scheme,
+            "scheme_steps": parse_scheme_steps(item.scheme_steps_json),
+            "default_sets": item.default_sets,
+            "default_reps": item.default_reps,
+            "default_duration_seconds": item.default_duration_seconds,
+            "default_rest_seconds": item.default_rest_seconds,
+            "default_weight_kg": item.default_weight_kg,
+        }
+
+    def _resolve_working_weight_for_plan(
+        self,
+        *,
+        plan: TrainingPlanModel,
+        exercise_row_id: str,
+        default_weight_kg: object,
+    ) -> float | None:
+        if plan.source == "system":
+            load = self._client_loads.find_platform(plan.user_id, exercise_row_id)
+        elif plan.trainer_user_id:
+            load = self._client_loads.find(plan.user_id, plan.trainer_user_id, exercise_row_id)
+        else:
+            load = None
+        if load is not None:
+            return float(load.working_weight_kg)
+        if default_weight_kg is None:
+            return None
+        return float(default_weight_kg)
+
+    def _apply_weights_to_line(
+        self,
+        line: PlanExerciseModel,
+        *,
+        working_weight: float,
+        load_scheme: str,
+        scheme_steps: list[float],
+        is_hold: bool,
+    ) -> None:
+        existing = parse_set_prescriptions(line.set_prescriptions_json)
+        result = rescale_plan_line_weights(
+            working_weight=working_weight,
+            load_scheme=load_scheme,
+            scheme_steps=scheme_steps,
+            is_hold=is_hold,
+            sets=line.sets,
+            reps=line.reps,
+            duration_seconds=line.duration_seconds,
+            rest_seconds=line.rest_seconds,
+            existing_prescriptions=existing,
+        )
+        line.weight_kg = result.weight_kg
+        line.set_prescriptions_json = dumps_set_prescriptions(list(result.set_prescriptions))
+
+    def _patch_active_plan_exercise_weights(
+        self,
+        *,
+        client_user_id: str,
+        exercise_row_id: str,
+        working_weight_kg: float,
+        plan_source: str,
+        trainer_user_id: str | None,
+        load_scheme: str,
+        scheme_steps: list[float],
+        is_hold: bool,
+    ) -> None:
+        plan = self._plans.find_active_by_user(client_user_id)
+        if plan is None or plan.source != plan_source:
+            return
+        if plan_source == "trainer" and plan.trainer_user_id != trainer_user_id:
+            return
+        for day in plan.days:
+            if day.is_completed:
+                continue
+            for line in day.exercises:
+                if line.exercise_id != exercise_row_id:
+                    continue
+                self._apply_weights_to_line(
+                    line,
+                    working_weight=working_weight_kg,
+                    load_scheme=load_scheme,
+                    scheme_steps=scheme_steps,
+                    is_hold=is_hold,
+                )
 
     @staticmethod
     def _is_replacement_candidate(
@@ -479,6 +596,16 @@ class PlanService:
             exercise_row_id=command.exercise_row_id,
             working_weight_kg=float(command.working_weight_kg),
         )
+        self._patch_active_plan_exercise_weights(
+            client_user_id=command.client_user_id,
+            exercise_row_id=command.exercise_row_id,
+            working_weight_kg=float(command.working_weight_kg),
+            plan_source="trainer",
+            trainer_user_id=command.trainer_user_id,
+            load_scheme=exercise.load_scheme,
+            scheme_steps=parse_scheme_steps(exercise.scheme_steps_json),
+            is_hold=bool(exercise.is_hold),
+        )
         self._session.commit()
         self._session.refresh(model)
         return self._mapper.client_load_to_domain(model)
@@ -494,6 +621,16 @@ class PlanService:
             client_user_id=command.client_user_id,
             exercise_row_id=command.exercise_row_id,
             working_weight_kg=float(command.working_weight_kg),
+        )
+        self._patch_active_plan_exercise_weights(
+            client_user_id=command.client_user_id,
+            exercise_row_id=command.exercise_row_id,
+            working_weight_kg=float(command.working_weight_kg),
+            plan_source="system",
+            trainer_user_id=None,
+            load_scheme=exercise.load_scheme,
+            scheme_steps=parse_scheme_steps(exercise.scheme_steps_json),
+            is_hold=bool(exercise.is_hold),
         )
         self._session.commit()
         self._session.refresh(model)

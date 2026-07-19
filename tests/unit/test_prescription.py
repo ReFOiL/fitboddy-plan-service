@@ -2,6 +2,8 @@ from datetime import date
 
 from application.generation.calculators.workout_scheduling_calculator import WorkoutSchedulingCalculator
 from application.generation.models import ExerciseCandidate, PlanGenerationInput
+from application.weight_prescription import rescale_plan_line_weights
+from domain.entities import PlanSetPrescription
 from domain.value_objects import TrainingGoal, TrainingLevel, WorkoutLocation
 
 
@@ -173,3 +175,26 @@ def test_beginner_scales_baseline_down() -> None:
     assert line.sets == 2
     assert line.reps == 8
     assert line.rest_seconds == 75
+
+
+def test_rescale_preserves_reps_and_updates_weights() -> None:
+    existing = (
+        PlanSetPrescription(1, 8, None, 70.0, 90),
+        PlanSetPrescription(2, 8, None, 85.0, 90),
+        PlanSetPrescription(3, 8, None, 100.0, 90),
+    )
+    result = rescale_plan_line_weights(
+        working_weight=120.0,
+        load_scheme="ascending",
+        is_hold=False,
+        sets=3,
+        reps=8,
+        duration_seconds=None,
+        rest_seconds=90,
+        existing_prescriptions=existing,
+    )
+    assert [item.reps for item in result.set_prescriptions] == [8, 8, 8]
+    assert [item.rest_seconds for item in result.set_prescriptions] == [90, 90, 90]
+    assert result.weight_kg == 120.0
+    assert result.set_prescriptions[-1].weight_kg == 120.0
+    assert result.set_prescriptions[0].weight_kg < result.set_prescriptions[-1].weight_kg

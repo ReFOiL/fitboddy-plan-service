@@ -11,6 +11,7 @@ from application.generation.models import (
     ScheduledSession,
     SetPrescription,
 )
+from application.weight_prescription import build_prescriptions, resolve_scheme_steps, scale_duration, scale_weight
 from domain.value_objects import TrainingGoal, TrainingLevel
 
 
@@ -174,28 +175,34 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
                 rest = rest + 15
             elif is_advanced_profile and not request.is_first_plan:
                 duration = int(duration * 1.2)
-            steps = cls._resolve_scheme_steps(exercise.load_scheme, sets, exercise.scheme_steps)
-            # Timed primary progression is duration; weight (if any) stays flat across sets.
-            flat_weight = cls._scale_weight(weight, 1.0) if weight is not None else None
+            result = build_prescriptions(
+                working_weight=weight,
+                sets=sets,
+                load_scheme=exercise.load_scheme,
+                scheme_steps=exercise.scheme_steps,
+                is_hold=True,
+                reps=None,
+                duration_seconds=duration,
+                rest_seconds=rest,
+            )
             prescriptions = tuple(
                 SetPrescription(
-                    set_index=index + 1,
-                    reps=None,
-                    duration_seconds=cls._scale_duration(duration, step),
-                    weight_kg=flat_weight,
-                    rest_seconds=rest,
+                    set_index=item.set_index,
+                    reps=item.reps,
+                    duration_seconds=item.duration_seconds,
+                    weight_kg=item.weight_kg,
+                    rest_seconds=item.rest_seconds,
                 )
-                for index, step in enumerate(steps)
+                for item in result.set_prescriptions
             )
-            summary_duration = prescriptions[-1].duration_seconds if prescriptions else duration
             return ExerciseLine(
                 exercise=exercise,
                 sort_order=sort_order,
                 sets=sets,
                 reps=None,
-                duration_seconds=summary_duration,
+                duration_seconds=result.duration_seconds,
                 rest_seconds=rest,
-                weight_kg=flat_weight,
+                weight_kg=result.weight_kg,
                 set_prescriptions=prescriptions,
             )
 
@@ -210,18 +217,26 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
             if weight is not None and exercise.exercise_id not in request.client_working_weights:
                 weight = round(weight * 1.1, 1)
 
-        steps = cls._resolve_scheme_steps(exercise.load_scheme, sets, exercise.scheme_steps)
+        result = build_prescriptions(
+            working_weight=weight,
+            sets=sets,
+            load_scheme=exercise.load_scheme,
+            scheme_steps=exercise.scheme_steps,
+            is_hold=False,
+            reps=reps,
+            duration_seconds=None,
+            rest_seconds=rest,
+        )
         prescriptions = tuple(
             SetPrescription(
-                set_index=index + 1,
-                reps=reps,
-                duration_seconds=None,
-                weight_kg=cls._scale_weight(weight, step) if weight is not None else None,
-                rest_seconds=rest,
+                set_index=item.set_index,
+                reps=item.reps,
+                duration_seconds=item.duration_seconds,
+                weight_kg=item.weight_kg,
+                rest_seconds=item.rest_seconds,
             )
-            for index, step in enumerate(steps)
+            for item in result.set_prescriptions
         )
-        summary_weight = prescriptions[-1].weight_kg if prescriptions else weight
         return ExerciseLine(
             exercise=exercise,
             sort_order=sort_order,
@@ -229,46 +244,18 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
             reps=reps,
             duration_seconds=None,
             rest_seconds=rest,
-            weight_kg=summary_weight,
+            weight_kg=result.weight_kg,
             set_prescriptions=prescriptions,
         )
 
     @staticmethod
     def _resolve_scheme_steps(scheme: str, sets: int, custom_steps: tuple[float, ...]) -> list[float]:
-        normalized = (scheme or "flat").strip().lower()
-        if custom_steps and normalized == "custom":
-            steps = list(custom_steps)
-            if len(steps) >= sets:
-                return steps[:sets]
-            if steps:
-                return steps + [steps[-1]] * (sets - len(steps))
-        if normalized == "ascending":
-            if sets <= 1:
-                return [1.0]
-            return [round(0.7 + (0.3 * index / (sets - 1)), 3) for index in range(sets)]
-        if normalized == "descending":
-            if sets <= 1:
-                return [1.0]
-            return [round(1.0 - (0.3 * index / (sets - 1)), 3) for index in range(sets)]
-        if custom_steps:
-            steps = list(custom_steps)
-            if len(steps) >= sets:
-                return steps[:sets]
-            if steps:
-                return steps + [steps[-1]] * (sets - len(steps))
-        return [1.0] * sets
+        return resolve_scheme_steps(scheme, sets, custom_steps)
 
     @staticmethod
     def _scale_duration(base_duration: int, step: float) -> int:
-        raw = base_duration * step
-        if abs(step - 1.0) < 1e-9:
-            return max(5, int(round(raw)))
-        return max(5, int(round(raw)))
+        return scale_duration(base_duration, step)
 
     @staticmethod
     def _scale_weight(base_weight: float, step: float) -> float:
-        raw = base_weight * step
-        # Preserve exact working/default weight on top-set (step=1.0); round ramps to 2.5 kg plates.
-        if abs(step - 1.0) < 1e-9:
-            return round(raw, 1)
-        return round(round(raw / 2.5) * 2.5, 1)
+        return scale_weight(base_weight, step)
