@@ -40,6 +40,7 @@ class PlanResponseFactory:
             excluded_pairs=payload["excluded_pairs"],
             default_splits=payload["default_splits"],
             default_workouts_per_week=payload["default_workouts_per_week"],
+            exercises_per_session=payload.get("exercises_per_session") or {},
         )
 
     @staticmethod

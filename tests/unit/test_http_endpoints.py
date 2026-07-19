@@ -1215,6 +1215,8 @@ def test_generation_policy_get_and_put() -> None:
         assert "excluded_pairs" in body
         assert "default_splits" in body
         assert "default_workouts_per_week" in body
+        assert "exercises_per_session" in body
+        assert body["exercises_per_session"]["default"]["min"] == 4
 
         updated = client.put(
             "/api/v1/admin/generation-policy",
@@ -1229,10 +1231,18 @@ def test_generation_policy_get_and_put() -> None:
                     "intermediate": 3,
                     "advanced": 4,
                 },
+                "exercises_per_session": {
+                    "default": {"min": 2, "max": 3},
+                    "beginner": {"min": 2, "max": 2},
+                    "intermediate": {"min": 4, "max": 6},
+                    "advanced": {"min": 4, "max": 7},
+                    "rehabilitation": {"min": 3, "max": 4},
+                },
             },
         )
         assert updated.status_code == 200
         assert updated.json()["default_workouts_per_week"]["beginner"] == 2
+        assert updated.json()["exercises_per_session"]["beginner"] == {"min": 2, "max": 2}
 
         system_plan = _generate_plan(client, {
                 "source": "system",
@@ -1309,3 +1319,120 @@ def test_today_not_found_without_plan() -> None:
         _auth_as_user("client_no_plan_today")
         response = client.get("/api/v1/plans/me/today", headers=_USER_HEADERS)
         assert response.status_code == 404
+
+
+def test_trainer_generation_policy_get_put_and_forbidden() -> None:
+    trainer_user_id = "trainer_policy_owner_1"
+    other_trainer_id = "trainer_policy_other_1"
+    with _client() as client:
+        _install_test_stubs()
+        fetched = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/generation-policy",
+            headers=_auth(trainer_user_id, role="trainer"),
+        )
+        assert fetched.status_code == 200
+        body = fetched.json()
+        assert body["excluded_pairs"] == []
+        assert body["exercises_per_session"]["default"]["min"] == 4
+
+        forbidden = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/generation-policy",
+            headers=_auth(other_trainer_id, role="trainer"),
+        )
+        assert forbidden.status_code == 403
+
+        updated = client.put(
+            f"/api/v1/trainers/{trainer_user_id}/generation-policy",
+            headers=_auth(trainer_user_id, role="trainer"),
+            json={
+                "excluded_pairs": [],
+                "default_splits": {
+                    "maintenance|beginner": ["full_body", "full_body"],
+                },
+                "default_workouts_per_week": {
+                    "beginner": 2,
+                    "intermediate": 3,
+                    "advanced": 4,
+                },
+                "exercises_per_session": {
+                    "default": {"min": 2, "max": 3},
+                    "beginner": {"min": 2, "max": 2},
+                    "intermediate": {"min": 4, "max": 6},
+                    "advanced": {"min": 4, "max": 7},
+                    "rehabilitation": {"min": 3, "max": 4},
+                },
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["default_workouts_per_week"]["beginner"] == 2
+        assert updated.json()["default_splits"]["maintenance|beginner"] == ["full_body", "full_body"]
+        assert updated.json()["exercises_per_session"]["beginner"] == {"min": 2, "max": 2}
+
+        forbidden_put = client.put(
+            f"/api/v1/trainers/{trainer_user_id}/generation-policy",
+            headers=_auth(other_trainer_id, role="trainer"),
+            json={
+                "excluded_pairs": [],
+                "default_splits": {},
+                "default_workouts_per_week": {"beginner": 1},
+                "exercises_per_session": {},
+            },
+        )
+        assert forbidden_put.status_code == 403
+
+        again = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/generation-policy",
+            headers=_auth(trainer_user_id, role="trainer"),
+        )
+        assert again.status_code == 200
+        assert again.json()["default_workouts_per_week"]["beginner"] == 2
+
+
+def test_trainer_generation_policy_affects_generate() -> None:
+    trainer_user_id = "trainer_policy_gen_1"
+    client_user_id = "client_policy_gen_1"
+    with _client() as client:
+        _install_test_stubs()
+        saved = client.put(
+            f"/api/v1/trainers/{trainer_user_id}/generation-policy",
+            headers=_auth(trainer_user_id, role="trainer"),
+            json={
+                "excluded_pairs": [],
+                "default_splits": {},
+                "default_workouts_per_week": {
+                    "beginner": 2,
+                    "intermediate": 3,
+                    "advanced": 4,
+                },
+                "exercises_per_session": {
+                    "default": {"min": 2, "max": 2},
+                    "beginner": {"min": 2, "max": 2},
+                    "intermediate": {"min": 2, "max": 2},
+                    "advanced": {"min": 2, "max": 2},
+                    "rehabilitation": {"min": 2, "max": 2},
+                },
+            },
+        )
+        assert saved.status_code == 200
+
+        plan = _generate_plan(
+            client,
+            {
+                "source": "trainer",
+                "user_id": client_user_id,
+                "trainer_user_id": trainer_user_id,
+                "goal": "maintenance",
+                "level": "beginner",
+                "workout_location": "home",
+                "workouts_per_week": 5,
+                "unavailable_equipment": ["dumbbells", "barbell"],
+            },
+            as_user=trainer_user_id,
+            as_role="trainer",
+        )
+        assert plan.status_code == 201
+        body = plan.json()
+        assert body["workouts_per_week"] == 2
+        assert body["days"]
+        for day in body["days"]:
+            assert len(day["exercises"]) == 2

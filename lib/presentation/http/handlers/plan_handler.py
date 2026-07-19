@@ -572,6 +572,38 @@ class PlanHttpHandler:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
+    def get_trainer_generation_policy(
+        self,
+        *,
+        authorization: str | None,
+        trainer_user_id: str,
+    ) -> GenerationPolicyResponse:
+        try:
+            self._require_self_trainer(authorization, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                config = plan_service.get_trainer_generation_policy(trainer_user_id)
+                return self._response_factory.from_generation_policy(config)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def upsert_trainer_generation_policy(
+        self,
+        *,
+        authorization: str | None,
+        trainer_user_id: str,
+        payload: UpsertGenerationPolicyRequest,
+    ) -> GenerationPolicyResponse:
+        try:
+            self._require_self_trainer(authorization, trainer_user_id)
+            config = GenerationPolicyConfig.from_dict(payload.model_dump())
+            with self._runtime.plan_service_scope() as plan_service:
+                saved = plan_service.upsert_trainer_generation_policy(trainer_user_id, config)
+                return self._response_factory.from_generation_policy(saved)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
     def admin_get_active_plan(self, *, authorization: str | None, user_id: str) -> TrainingPlanResponse:
         try:
             self._require_platform_admin(authorization)
@@ -610,6 +642,12 @@ class PlanHttpHandler:
         user = self._require_current_user(authorization)
         if user.user_id != client_user_id:
             raise ForbiddenError("not allowed to access another client's platform loads")
+        return user
+
+    def _require_self_trainer(self, authorization: str | None, trainer_user_id: str) -> AuthUser:
+        user = self._require_current_user(authorization)
+        if user.user_id != trainer_user_id:
+            raise ForbiddenError("not allowed to access another trainer's generation policy")
         return user
 
     def _require_can_access_client_plan(self, authorization: str | None, client_user_id: str) -> AuthUser:

@@ -142,15 +142,10 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
 
     @staticmethod
     def _session_size(week: int, slot_index: int, request: PlanGenerationInput, variation_seed: int) -> int:
-        session_min = 4
-        session_max = 7
-        if request.is_first_plan:
-            if request.goal == TrainingGoal.REHABILITATION:
-                session_min, session_max = 3, 4
-            elif request.level == TrainingLevel.BEGINNER:
-                session_min, session_max = 3, 5
-            elif request.level == TrainingLevel.INTERMEDIATE:
-                session_min, session_max = 4, 6
+        session_min = max(1, min(12, int(request.session_size_min)))
+        session_max = max(1, min(12, int(request.session_size_max)))
+        if session_max < session_min:
+            session_min, session_max = session_max, session_min
         mix = (variation_seed + week * 17 + slot_index * 5) & 0xFFFFFFFF
         span = session_max - session_min + 1
         return session_min + (mix % span)

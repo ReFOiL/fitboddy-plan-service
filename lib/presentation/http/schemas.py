@@ -160,16 +160,23 @@ class TrainingPlanResponse(BaseModel):
     previous_adherence: float | None = None
 
 
+class SessionSizeBounds(BaseModel):
+    min: int = Field(ge=1, le=12)
+    max: int = Field(ge=1, le=12)
+
+
 class GenerationPolicyResponse(BaseModel):
     excluded_pairs: list[list[str]] = Field(default_factory=list)
     default_splits: dict[str, list[str]] = Field(default_factory=dict)
     default_workouts_per_week: dict[str, int] = Field(default_factory=dict)
+    exercises_per_session: dict[str, SessionSizeBounds] = Field(default_factory=dict)
 
 
 class UpsertGenerationPolicyRequest(BaseModel):
     excluded_pairs: list[list[str]] = Field(default_factory=list)
     default_splits: dict[str, list[str]] = Field(default_factory=dict)
     default_workouts_per_week: dict[str, int] = Field(default_factory=dict)
+    exercises_per_session: dict[str, SessionSizeBounds] = Field(default_factory=dict)
 
 
 class TrainerExerciseResponse(BaseModel):

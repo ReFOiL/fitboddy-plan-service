@@ -1,11 +1,41 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from enum import Enum as PyEnum
+from typing import TypeVar
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Index, Integer, PrimaryKeyConstraint, String, Text, UniqueConstraint, func, text
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    DateTime,
+    Enum as SAEnum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    PrimaryKeyConstraint,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from application.db import Base
+from domain.value_objects import SessionBoundSlot, TrainingGoal, TrainingLevelName, WorkoutCategory
+
+_E = TypeVar("_E", bound=PyEnum)
+
+
+def _str_enum(enum_cls: type[_E], *, name: str) -> SAEnum:
+    return SAEnum(
+        enum_cls,
+        name=name,
+        native_enum=False,
+        length=32,
+        values_callable=lambda members: [member.value for member in members],
+    )
 
 
 class TrainingPlanModel(Base):
@@ -209,6 +239,142 @@ class GenerationPolicyModel(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class TrainerGenerationPolicyModel(Base):
+    __tablename__ = "trainer_generation_policies"
+
+    trainer_user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    workouts_per_week: Mapped[list[TrainerPolicyWorkoutsPerWeekModel]] = relationship(  # type: ignore[name-defined]
+        "TrainerPolicyWorkoutsPerWeekModel",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    session_bounds: Mapped[list[TrainerPolicySessionBoundsModel]] = relationship(  # type: ignore[name-defined]
+        "TrainerPolicySessionBoundsModel",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    split_days: Mapped[list[TrainerPolicySplitDayModel]] = relationship(  # type: ignore[name-defined]
+        "TrainerPolicySplitDayModel",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    excluded_pairs: Mapped[list[TrainerPolicyExcludedPairModel]] = relationship(  # type: ignore[name-defined]
+        "TrainerPolicyExcludedPairModel",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+
+class TrainerPolicyWorkoutsPerWeekModel(Base):
+    __tablename__ = "trainer_policy_workouts_per_week"
+    __table_args__ = (
+        CheckConstraint(
+            "level IN ('beginner', 'intermediate', 'advanced')",
+            name="ck_trainer_wpw_level",
+        ),
+        CheckConstraint(
+            "workouts_per_week >= 1 AND workouts_per_week <= 7",
+            name="ck_trainer_wpw_range",
+        ),
+    )
+
+    trainer_user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("trainer_generation_policies.trainer_user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    level: Mapped[TrainingLevelName] = mapped_column(
+        _str_enum(TrainingLevelName, name="trainer_policy_level"),
+        primary_key=True,
+    )
+    workouts_per_week: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class TrainerPolicySessionBoundsModel(Base):
+    __tablename__ = "trainer_policy_session_bounds"
+    __table_args__ = (
+        CheckConstraint(
+            "slot IN ('default', 'beginner', 'intermediate', 'advanced', 'rehabilitation')",
+            name="ck_trainer_session_slot",
+        ),
+        CheckConstraint("min_exercises >= 1 AND min_exercises <= 12", name="ck_trainer_session_min"),
+        CheckConstraint("max_exercises >= 1 AND max_exercises <= 12", name="ck_trainer_session_max"),
+        CheckConstraint("max_exercises >= min_exercises", name="ck_trainer_session_order"),
+    )
+
+    trainer_user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("trainer_generation_policies.trainer_user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    slot: Mapped[SessionBoundSlot] = mapped_column(
+        _str_enum(SessionBoundSlot, name="trainer_policy_session_slot"),
+        primary_key=True,
+    )
+    min_exercises: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_exercises: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class TrainerPolicySplitDayModel(Base):
+    __tablename__ = "trainer_policy_split_days"
+    __table_args__ = (
+        CheckConstraint(
+            "goal IN ('maintenance', 'weight_loss', 'muscle_gain', 'endurance', 'rehabilitation')",
+            name="ck_trainer_split_goal",
+        ),
+        CheckConstraint(
+            "level IN ('beginner', 'intermediate', 'advanced')",
+            name="ck_trainer_split_level",
+        ),
+        CheckConstraint(
+            "category IN ('upper', 'lower', 'core', 'full_body')",
+            name="ck_trainer_split_category",
+        ),
+        CheckConstraint("position >= 0", name="ck_trainer_split_position"),
+    )
+
+    trainer_user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("trainer_generation_policies.trainer_user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    goal: Mapped[TrainingGoal] = mapped_column(
+        _str_enum(TrainingGoal, name="trainer_policy_goal"),
+        primary_key=True,
+    )
+    level: Mapped[TrainingLevelName] = mapped_column(
+        _str_enum(TrainingLevelName, name="trainer_policy_split_level"),
+        primary_key=True,
+    )
+    position: Mapped[int] = mapped_column(Integer, primary_key=True)
+    category: Mapped[WorkoutCategory] = mapped_column(
+        _str_enum(WorkoutCategory, name="trainer_policy_category"),
+        nullable=False,
+    )
+
+
+class TrainerPolicyExcludedPairModel(Base):
+    __tablename__ = "trainer_policy_excluded_pairs"
+    __table_args__ = (
+        CheckConstraint("exercise_a_id < exercise_b_id", name="ck_trainer_pair_ordered"),
+    )
+
+    trainer_user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("trainer_generation_policies.trainer_user_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    exercise_a_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    exercise_b_id: Mapped[str] = mapped_column(String(64), primary_key=True)
 
 
 class ClientExerciseLoadModel(Base):

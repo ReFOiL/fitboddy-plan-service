@@ -3,6 +3,7 @@ from application.repositories.generation_policy import GenerationPolicyRepositor
 from application.repositories.mappers import PlanMapper
 from application.repositories.platform_exercise import PlatformExerciseRepository
 from application.repositories.trainer_exercise import TrainerExerciseRepository
+from application.repositories.trainer_generation_policy import TrainerGenerationPolicyRepository
 from application.repositories.training_plan import (
     PlanDayRepository,
     PlanExerciseRepository,
@@ -17,5 +18,6 @@ __all__ = [
     "PlanMapper",
     "PlatformExerciseRepository",
     "TrainerExerciseRepository",
+    "TrainerGenerationPolicyRepository",
     "TrainingPlanRepository",
 ]

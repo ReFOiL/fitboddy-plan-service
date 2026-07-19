@@ -70,3 +70,5 @@ class PlanGenerationInput:
     adherence_score: float = 1.0
     weekly_split: tuple[str, ...] = ()
     excluded_pairs: tuple[tuple[str, str], ...] = ()
+    session_size_min: int = 4
+    session_size_max: int = 7

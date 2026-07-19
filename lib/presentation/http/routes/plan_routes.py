@@ -4,6 +4,7 @@ from presentation.http.schemas import (
     ClientExerciseLoadResponse,
     ExerciseVideoUploadResponse,
     GeneratePlanRequest,
+    GenerationPolicyResponse,
     MuscleResponse,
     PlanDayResponse,
     PlatformExerciseResponse,
@@ -11,6 +12,7 @@ from presentation.http.schemas import (
     TrainerExerciseResponse,
     TrainingPlanResponse,
     UpsertClientLoadRequest,
+    UpsertGenerationPolicyRequest,
     UpsertTrainerExerciseRequest,
 )
 
@@ -60,6 +62,18 @@ class PlanRoutes:
             self.get_plan_day,
             methods=["GET"],
             response_model=PlanDayResponse,
+        )
+        self.router.add_api_route(
+            "/trainers/{trainer_user_id}/generation-policy",
+            self.get_trainer_generation_policy,
+            methods=["GET"],
+            response_model=GenerationPolicyResponse,
+        )
+        self.router.add_api_route(
+            "/trainers/{trainer_user_id}/generation-policy",
+            self.upsert_trainer_generation_policy,
+            methods=["PUT"],
+            response_model=GenerationPolicyResponse,
         )
         self.router.add_api_route(
             "/trainers/{trainer_user_id}/exercises",
@@ -198,6 +212,30 @@ class PlanRoutes:
             authorization=authorization,
             day_index=day_index,
             line_id=line_id,
+        )
+
+    @staticmethod
+    def get_trainer_generation_policy(
+        request: Request,
+        trainer_user_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> GenerationPolicyResponse:
+        return request.app.state.plan_handler.get_trainer_generation_policy(
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+        )
+
+    @staticmethod
+    def upsert_trainer_generation_policy(
+        request: Request,
+        trainer_user_id: str,
+        payload: UpsertGenerationPolicyRequest,
+        authorization: str | None = Header(default=None),
+    ) -> GenerationPolicyResponse:
+        return request.app.state.plan_handler.upsert_trainer_generation_policy(
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+            payload=payload,
         )
 
     @staticmethod

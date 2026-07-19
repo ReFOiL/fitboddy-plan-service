@@ -177,6 +177,29 @@ def test_beginner_scales_baseline_down() -> None:
     assert line.rest_seconds == 75
 
 
+def test_session_size_uses_request_bounds() -> None:
+    pool = [
+        ExerciseCandidate(
+            f"ex-{index}",
+            f"Упр {index}",
+            "none",
+            False,
+            1,
+            "full_body",
+            default_sets=3,
+            default_reps=10,
+            default_rest_seconds=45,
+        )
+        for index in range(6)
+    ]
+    sessions = WorkoutSchedulingCalculator().build(
+        pool,
+        _request(session_size_min=2, session_size_max=2, workouts_per_week=1),
+    )
+    assert sessions
+    assert all(len(session.lines) == 2 for session in sessions)
+
+
 def test_rescale_preserves_reps_and_updates_weights() -> None:
     existing = (
         PlanSetPrescription(1, 8, None, 70.0, 90),

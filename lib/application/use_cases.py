@@ -52,6 +52,7 @@ from application.repositories import (
     PlanMapper,
     PlatformExerciseRepository,
     TrainerExerciseRepository,
+    TrainerGenerationPolicyRepository,
     TrainingPlanRepository,
 )
 from application.repositories.exercise_muscles import ExerciseMuscleRepository
@@ -95,6 +96,7 @@ class PlanService:
         self._platform_exercises = PlatformExerciseRepository(session)
         self._client_loads = ClientExerciseLoadRepository(session)
         self._policies = GenerationPolicyRepository(session)
+        self._trainer_policies = TrainerGenerationPolicyRepository(session)
         self._exercise_muscles = ExerciseMuscleRepository(session)
         self._mapper = PlanMapper()
         self._generation_orchestrator = generation_orchestrator
@@ -144,17 +146,18 @@ class PlanService:
         goal = TrainingGoal.from_raw(command.goal)
         level = TrainingLevel.from_raw(command.level)
         workout_location = WorkoutLocation.from_raw(command.workout_location)
-        policy = self._policies.get_config()
+        if source == "trainer":
+            assert command.trainer_user_id is not None
+            policy = self._trainer_policies.get_config(command.trainer_user_id)
+        else:
+            policy = self._policies.get_config()
         previous_plan = self._plans.find_active_by_user(command.user_id)
         is_first_plan = not self._plans.exists_for_user(command.user_id)
         previous_adherence, recent_exercise_ids = self._adherence_from_plan(previous_plan)
 
         level_key = level.name.lower()
-        if source == "system":
-            policy_wpw = policy.workouts_per_week_for(level_key)
-            base_wpw = policy_wpw if policy_wpw is not None else command.workouts_per_week
-        else:
-            base_wpw = command.workouts_per_week
+        policy_wpw = policy.workouts_per_week_for(level_key)
+        base_wpw = policy_wpw if policy_wpw is not None else command.workouts_per_week
         workouts_per_week = self._normalize_workouts_per_week(
             self._adjust_wpw_by_adherence(base_wpw, previous_adherence, is_first_plan)
         )
@@ -193,7 +196,12 @@ class PlanService:
             }
 
         available_equipment = self._available_equipment_from_catalog(equipment_values, unavailable_keys)
-        weekly_split = policy.split_for(goal=goal.value, level=level_key) if source == "system" else ()
+        weekly_split = policy.split_for(goal=goal.value, level=level_key)
+        session_min, session_max = policy.session_bounds_for(
+            level=level_key,
+            goal=goal.value,
+            is_first_plan=is_first_plan,
+        )
 
         request = PlanGenerationInput(
             source=source,
@@ -209,7 +217,9 @@ class PlanService:
             client_working_weights=client_working_weights,
             adherence_score=previous_adherence,
             weekly_split=weekly_split,
-            excluded_pairs=policy.excluded_pairs if source == "system" else (),
+            excluded_pairs=policy.excluded_pairs,
+            session_size_min=session_min,
+            session_size_max=session_max,
         )
         generation = self._generation_orchestrator.generate(request, match_limit=24)
         if not generation.matched_pool:
@@ -278,6 +288,18 @@ class PlanService:
 
     def upsert_generation_policy(self, config: GenerationPolicyConfig) -> GenerationPolicyConfig:
         saved = self._policies.upsert_config(config)
+        self._session.commit()
+        return saved
+
+    def get_trainer_generation_policy(self, trainer_user_id: str) -> GenerationPolicyConfig:
+        return self._trainer_policies.get_config(trainer_user_id)
+
+    def upsert_trainer_generation_policy(
+        self,
+        trainer_user_id: str,
+        config: GenerationPolicyConfig,
+    ) -> GenerationPolicyConfig:
+        saved = self._trainer_policies.upsert_config(trainer_user_id, config)
         self._session.commit()
         return saved
 
