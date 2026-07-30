@@ -298,6 +298,14 @@ def test_trainer_catalog_crud() -> None:
         archived_item = next(item for item in listed_all.json() if item["row_id"] == row_id)
         assert archived_item["is_active"] is False
 
+        restored = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/restore")
+        assert restored.status_code == 204
+
+        listed_after_restore = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises")
+        assert listed_after_restore.status_code == 200
+        restored_item = next(item for item in listed_after_restore.json() if item["row_id"] == row_id)
+        assert restored_item["is_active"] is True
+
 
 def test_exercise_video_upload_requires_s3_configuration() -> None:
     trainer_user_id = "trainer_video_1"
@@ -1255,6 +1263,43 @@ def test_generation_policy_get_and_put() -> None:
             })
         assert system_plan.status_code == 201
         assert system_plan.json()["workouts_per_week"] == 2
+
+
+def test_regenerate_starts_today_even_if_previous_plan_ends_in_future() -> None:
+    user_id = "client_regen_start_today"
+    with _client() as client:
+        _install_test_stubs()
+        first = _generate_plan(
+            client,
+            {
+                "source": "system",
+                "user_id": user_id,
+                "goal": "maintenance",
+                "level": "intermediate",
+                "workout_location": "gym",
+                "workouts_per_week": 3,
+                "start_date": "2026-08-03",
+            },
+        )
+        assert first.status_code == 201
+        assert first.json()["end_date"] >= "2026-08-24"
+
+        second = _generate_plan(
+            client,
+            {
+                "source": "system",
+                "user_id": user_id,
+                "goal": "maintenance",
+                "level": "intermediate",
+                "workout_location": "gym",
+                "workouts_per_week": 3,
+            },
+        )
+        assert second.status_code == 201
+        body = second.json()
+        assert body["start_date"] == date.today().isoformat()
+        first_day = min(day["scheduled_for"] for day in body["days"])
+        assert first_day == date.today().isoformat()
 
 
 def test_regenerate_uses_adherence_to_adjust_frequency() -> None:

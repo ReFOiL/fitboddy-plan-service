@@ -37,6 +37,11 @@ class WorkoutSchedulingCalculator(AbstractSchedulingCalculator):
         for week in range(1, 5):
             week_start = request.start_date + timedelta(days=(week - 1) * 7)
             offsets = self._choose_offsets(workouts_per_week, variation_seed, week)
+            # Week 1 always includes the start day so the first workout is not deferred.
+            if week == 1 and offsets:
+                shift = min(offsets)
+                if shift:
+                    offsets = [offset - shift for offset in offsets]
             anchors = self._select_anchors(pool, workouts_per_week, week, variation_seed, request.weekly_split)
             week_volume = self._WEEKLY_VOLUME.get(week, 1.2)
             if request.adherence_score <= 0.45:

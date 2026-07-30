@@ -294,6 +294,17 @@ class PlanHttpHandler:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
+    def restore_trainer_exercise(self, trainer_user_id: str, row_id: str) -> None:
+        try:
+            with self._runtime.plan_service_scope() as plan_service:
+                plan_service.restore_trainer_exercise(
+                    self._request_factory.to_restore_trainer_exercise_command(trainer_user_id, row_id)
+                )
+                return
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
     async def upload_trainer_exercise_video(
         self,
         trainer_user_id: str,
@@ -540,6 +551,18 @@ class PlanHttpHandler:
             with self._runtime.plan_service_scope() as plan_service:
                 plan_service.archive_trainer_exercise(
                     self._request_factory.to_archive_trainer_exercise_command(trainer_user_id, row_id)
+                )
+                return
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def admin_restore_exercise(self, *, authorization: str | None, trainer_user_id: str, row_id: str) -> None:
+        try:
+            self._require_platform_admin(authorization)
+            with self._runtime.plan_service_scope() as plan_service:
+                plan_service.restore_trainer_exercise(
+                    self._request_factory.to_restore_trainer_exercise_command(trainer_user_id, row_id)
                 )
                 return
         except PlanError as exc:

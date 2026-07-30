@@ -29,6 +29,12 @@ class AdminRoutes:
             status_code=status.HTTP_204_NO_CONTENT,
         )
         self.router.add_api_route(
+            "/exercises/{trainer_user_id}/{row_id}/restore",
+            self.restore_exercise,
+            methods=["POST"],
+            status_code=status.HTTP_204_NO_CONTENT,
+        )
+        self.router.add_api_route(
             "/platform-exercises",
             self.list_platform_exercises,
             methods=["GET"],
@@ -121,6 +127,20 @@ class AdminRoutes:
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> Response:
         request.app.state.plan_handler.admin_archive_exercise(
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+            row_id=row_id,
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    def restore_exercise(
+        self,
+        trainer_user_id: str,
+        row_id: str,
+        request: Request,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Response:
+        request.app.state.plan_handler.admin_restore_exercise(
             authorization=authorization,
             trainer_user_id=trainer_user_id,
             row_id=row_id,

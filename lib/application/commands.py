@@ -100,6 +100,12 @@ class ArchiveTrainerExerciseCommand:
 
 
 @dataclass(frozen=True)
+class RestoreTrainerExerciseCommand:
+    trainer_user_id: str
+    row_id: str
+
+
+@dataclass(frozen=True)
 class ListPlatformExercisesCommand:
     include_archived: bool
     page: int

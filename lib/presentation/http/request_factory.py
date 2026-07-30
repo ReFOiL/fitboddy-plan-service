@@ -3,6 +3,7 @@ from application.commands import (
     AddTrainerExerciseCommand,
     ArchivePlatformExerciseCommand,
     ArchiveTrainerExerciseCommand,
+    RestoreTrainerExerciseCommand,
     CompletePlanDayCommand,
     GeneratePlanCommand,
     GetActivePlanCommand,
@@ -166,6 +167,16 @@ class PlanRequestFactory:
         row_id: str,
     ) -> ArchiveTrainerExerciseCommand:
         return ArchiveTrainerExerciseCommand(
+            trainer_user_id=trainer_user_id,
+            row_id=row_id,
+        )
+
+    @staticmethod
+    def to_restore_trainer_exercise_command(
+        trainer_user_id: str,
+        row_id: str,
+    ) -> RestoreTrainerExerciseCommand:
+        return RestoreTrainerExerciseCommand(
             trainer_user_id=trainer_user_id,
             row_id=row_id,
         )

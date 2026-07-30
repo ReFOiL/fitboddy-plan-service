@@ -14,6 +14,7 @@ from application.commands import (
     AddTrainerExerciseCommand,
     ArchivePlatformExerciseCommand,
     ArchiveTrainerExerciseCommand,
+    RestoreTrainerExerciseCommand,
     CompletePlanDayCommand,
     GeneratePlanCommand,
     GetActivePlanCommand,
@@ -162,13 +163,10 @@ class PlanService:
             self._adjust_wpw_by_adherence(base_wpw, previous_adherence, is_first_plan)
         )
 
-        if command.start_date is not None:
-            start_date = command.start_date
-        elif previous_plan is not None:
-            next_day = max(date.today(), previous_plan.end_date + timedelta(days=1))
-            start_date = self._next_monday(next_day)
-        else:
-            start_date = self._next_monday(date.today())
+        # Replace/rebuild always starts today (unless caller sets an explicit date).
+        # Do not wait for previous plan end_date — that pushed first workouts weeks ahead
+        # when the old cycle itself started in the future.
+        start_date = command.start_date if command.start_date is not None else date.today()
 
         unavailable = set(normalize_equipment_list(command.unavailable_equipment))
         unavailable_keys = {item.casefold() for item in unavailable}
@@ -785,6 +783,15 @@ class PlanService:
         model.is_active = False
         self._session.commit()
 
+    def restore_trainer_exercise(self, command: RestoreTrainerExerciseCommand) -> None:
+        model = self._trainer_exercises.find_by_trainer_and_row_id(command.trainer_user_id, command.row_id)
+        if model is None:
+            raise TrainerExerciseNotFoundError("trainer exercise not found")
+        if model.is_active:
+            return
+        model.is_active = True
+        self._session.commit()
+
     def list_platform_exercises(self, command: ListPlatformExercisesCommand) -> tuple[list[PlatformExercise], int]:
         page = max(command.page, 1)
         page_size = min(max(command.page_size, 1), 100)
@@ -1035,13 +1042,6 @@ class PlanService:
             if line.exercise_id
         }
         return adherence, recent_ids
-
-    @staticmethod
-    def _next_monday(from_date: date) -> date:
-        weekday = from_date.weekday()
-        if weekday == 0:
-            return from_date
-        return from_date.fromordinal(from_date.toordinal() + (7 - weekday))
 
     @staticmethod
     def _validate_exercise_fields(

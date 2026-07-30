@@ -108,6 +108,13 @@ class PlanRoutes:
             response_class=Response,
         )
         self.router.add_api_route(
+            "/trainers/{trainer_user_id}/exercises/{row_id}/restore",
+            self.restore_trainer_exercise,
+            methods=["POST"],
+            status_code=status.HTTP_204_NO_CONTENT,
+            response_class=Response,
+        )
+        self.router.add_api_route(
             "/trainers/{trainer_user_id}/exercises/{row_id}/video",
             self.upload_trainer_exercise_video,
             methods=["POST"],
@@ -270,6 +277,11 @@ class PlanRoutes:
     @staticmethod
     def archive_trainer_exercise(request: Request, trainer_user_id: str, row_id: str) -> Response:
         request.app.state.plan_handler.archive_trainer_exercise(trainer_user_id, row_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @staticmethod
+    def restore_trainer_exercise(request: Request, trainer_user_id: str, row_id: str) -> Response:
+        request.app.state.plan_handler.restore_trainer_exercise(trainer_user_id, row_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @staticmethod
