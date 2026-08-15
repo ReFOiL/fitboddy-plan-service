@@ -46,14 +46,17 @@ class AuthGateway:
 
 
 class ProfileGateway:
-    def __init__(self, http_client: httpx.Client, profile_service_url: str) -> None:
+    def __init__(self, http_client: httpx.Client, profile_service_url: str, service_token: str = "") -> None:
         self._http_client = http_client
         self._profile_service_url = profile_service_url.rstrip("/")
+        self._service_token = service_token
 
     def is_questionnaire_completed(self, user_id: str) -> bool:
         try:
+            headers = {"X-Service-Token": self._service_token} if self._service_token else {}
             response = self._http_client.get(
-                f"{self._profile_service_url}/api/v1/profiles/internal/{user_id}/questionnaire-status"
+                f"{self._profile_service_url}/api/v1/profiles/internal/{user_id}/questionnaire-status",
+                headers=headers,
             )
         except httpx.HTTPError as exc:
             raise IntegrationError("profile-service is unavailable") from exc

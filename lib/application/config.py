@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     auth_service_url: str = Field(default="http://auth-service:8000", alias="AUTH_SERVICE_URL")
     require_profile_completion: bool = Field(default=True, alias="REQUIRE_PROFILE_COMPLETION")
     http_timeout_seconds: float = Field(default=5.0, alias="HTTP_TIMEOUT_SECONDS")
+    internal_service_token: str = Field(default="", alias="INTERNAL_SERVICE_TOKEN")
     s3_media_enabled: bool = Field(default=False, alias="S3_MEDIA_ENABLED")
     s3_endpoint: str = Field(default="", alias="S3_ENDPOINT")
     s3_access_key: str = Field(default="", alias="S3_ACCESS_KEY")

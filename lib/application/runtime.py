@@ -25,6 +25,7 @@ class PlanApplicationRuntime:
         self._profile_gateway = ProfileGateway(
             http_client=self._http_client,
             profile_service_url=settings.profile_service_url,
+            service_token=settings.internal_service_token,
         )
         self._tenant_gateway = TenantGateway(
             http_client=self._http_client,

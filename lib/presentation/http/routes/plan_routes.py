@@ -190,8 +190,17 @@ class PlanRoutes:
         return request.app.state.plan_handler.get_active_plan(authorization=authorization, user_id=user_id)
 
     @staticmethod
-    def get_plan_day(request: Request, plan_id: str, day_index: int) -> PlanDayResponse:
-        return request.app.state.plan_handler.get_plan_day(plan_id, day_index)
+    def get_plan_day(
+        request: Request,
+        plan_id: str,
+        day_index: int,
+        authorization: str | None = Header(default=None),
+    ) -> PlanDayResponse:
+        return request.app.state.plan_handler.get_plan_day(
+            authorization=authorization,
+            plan_id=plan_id,
+            day_index=day_index,
+        )
 
     @staticmethod
     def get_today_workout(
@@ -250,20 +259,39 @@ class PlanRoutes:
         request: Request,
         trainer_user_id: str,
         include_archived: bool = Query(default=False),
+        authorization: str | None = Header(default=None),
     ) -> list[TrainerExerciseResponse]:
-        return request.app.state.plan_handler.list_trainer_exercises(trainer_user_id, include_archived)
+        return request.app.state.plan_handler.list_trainer_exercises(
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+            include_archived=include_archived,
+        )
 
     @staticmethod
     def add_trainer_exercise(
         request: Request,
         trainer_user_id: str,
         payload: UpsertTrainerExerciseRequest,
+        authorization: str | None = Header(default=None),
     ) -> TrainerExerciseResponse:
-        return request.app.state.plan_handler.add_trainer_exercise(trainer_user_id, payload)
+        return request.app.state.plan_handler.add_trainer_exercise(
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+            payload=payload,
+        )
 
     @staticmethod
-    def get_trainer_exercise(request: Request, trainer_user_id: str, row_id: str) -> TrainerExerciseResponse:
-        return request.app.state.plan_handler.get_trainer_exercise(trainer_user_id, row_id)
+    def get_trainer_exercise(
+        request: Request,
+        trainer_user_id: str,
+        row_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> TrainerExerciseResponse:
+        return request.app.state.plan_handler.get_trainer_exercise(
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+            row_id=row_id,
+        )
 
     @staticmethod
     def update_trainer_exercise(
@@ -271,17 +299,41 @@ class PlanRoutes:
         trainer_user_id: str,
         row_id: str,
         payload: UpsertTrainerExerciseRequest,
+        authorization: str | None = Header(default=None),
     ) -> TrainerExerciseResponse:
-        return request.app.state.plan_handler.update_trainer_exercise(trainer_user_id, row_id, payload)
+        return request.app.state.plan_handler.update_trainer_exercise(
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+            row_id=row_id,
+            payload=payload,
+        )
 
     @staticmethod
-    def archive_trainer_exercise(request: Request, trainer_user_id: str, row_id: str) -> Response:
-        request.app.state.plan_handler.archive_trainer_exercise(trainer_user_id, row_id)
+    def archive_trainer_exercise(
+        request: Request,
+        trainer_user_id: str,
+        row_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> Response:
+        request.app.state.plan_handler.archive_trainer_exercise(
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+            row_id=row_id,
+        )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @staticmethod
-    def restore_trainer_exercise(request: Request, trainer_user_id: str, row_id: str) -> Response:
-        request.app.state.plan_handler.restore_trainer_exercise(trainer_user_id, row_id)
+    def restore_trainer_exercise(
+        request: Request,
+        trainer_user_id: str,
+        row_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> Response:
+        request.app.state.plan_handler.restore_trainer_exercise(
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+            row_id=row_id,
+        )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @staticmethod
@@ -290,18 +342,29 @@ class PlanRoutes:
         trainer_user_id: str,
         row_id: str,
         file: UploadFile = File(...),
+        authorization: str | None = Header(default=None),
     ) -> ExerciseVideoUploadResponse:
         data = await file.read()
         return await request.app.state.plan_handler.upload_trainer_exercise_video(
-            trainer_user_id,
-            row_id,
-            file.filename or "video.mp4",
-            data,
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+            row_id=row_id,
+            filename=file.filename or "video.mp4",
+            data=data,
         )
 
     @staticmethod
-    async def delete_trainer_exercise_video(request: Request, trainer_user_id: str, row_id: str) -> Response:
-        await request.app.state.plan_handler.delete_trainer_exercise_video(trainer_user_id, row_id)
+    async def delete_trainer_exercise_video(
+        request: Request,
+        trainer_user_id: str,
+        row_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> Response:
+        await request.app.state.plan_handler.delete_trainer_exercise_video(
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+            row_id=row_id,
+        )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @staticmethod

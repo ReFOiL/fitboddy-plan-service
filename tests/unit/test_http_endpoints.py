@@ -48,6 +48,10 @@ def _auth(user_id: str, *, role: str = "client") -> dict[str, str]:
     return _USER_HEADERS
 
 
+def _catalog(trainer_user_id: str) -> dict[str, str]:
+    return _auth(trainer_user_id, role="trainer")
+
+
 def _generate_plan(client: TestClient, payload: dict, *, as_user: str | None = None, as_role: str | None = None):
     user_id = payload["user_id"]
     source = payload.get("source", "trainer")
@@ -154,10 +158,13 @@ def test_generate_and_read_active_plan() -> None:
         assert active.status_code == 200
         assert active.json()["plan_id"] == plan_id
 
-        first_day = client.get(f"/api/v1/plans/{plan_id}/days/1")
+        first_day = client.get(f"/api/v1/plans/{plan_id}/days/1", headers=_auth("client_1"))
         assert first_day.status_code == 200
         assert first_day.json()["day_index"] == 1
         assert len(first_day.json()["exercises"]) > 0
+
+        outsider_day = client.get(f"/api/v1/plans/{plan_id}/days/1", headers=_auth("stranger"))
+        assert outsider_day.status_code == 403
 
 
 def test_active_plan_not_found() -> None:
@@ -250,7 +257,7 @@ def test_trainer_catalog_crud() -> None:
     with _client() as client:
         _install_test_stubs()
         created = client.post(
-            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id),
             json=create_payload,
         )
         assert created.status_code == 201
@@ -260,11 +267,11 @@ def test_trainer_catalog_crud() -> None:
         assert created.json()["description"] == "Keep torso upright and control the descent."
         assert "exercise_id" not in created.json()
 
-        detail = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}")
+        detail = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}", headers=_catalog(trainer_user_id))
         assert detail.status_code == 200
         assert detail.json()["description"] == "Keep torso upright and control the descent."
 
-        listed = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises")
+        listed = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id))
         assert listed.status_code == 200
         assert any(item["row_id"] == row_id for item in listed.json())
 
@@ -278,7 +285,7 @@ def test_trainer_catalog_crud() -> None:
             "workout_category": "lower",
         }
         updated = client.put(
-            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}",
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}", headers=_catalog(trainer_user_id),
             json=update_payload,
         )
         assert updated.status_code == 200
@@ -286,25 +293,31 @@ def test_trainer_catalog_crud() -> None:
         assert updated.json()["difficulty"] == 4
         assert updated.json()["description"] == "Pause 1 second at the bottom."
 
-        archived = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/archive")
+        archived = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/archive", headers=_catalog(trainer_user_id))
         assert archived.status_code == 204
 
-        listed_active = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises")
+        listed_active = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id))
         assert listed_active.status_code == 200
         assert all(item["row_id"] != row_id for item in listed_active.json())
 
-        listed_all = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises?include_archived=true")
+        listed_all = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises?include_archived=true", headers=_catalog(trainer_user_id))
         assert listed_all.status_code == 200
         archived_item = next(item for item in listed_all.json() if item["row_id"] == row_id)
         assert archived_item["is_active"] is False
 
-        restored = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/restore")
+        restored = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/restore", headers=_catalog(trainer_user_id))
         assert restored.status_code == 204
 
-        listed_after_restore = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises")
+        listed_after_restore = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id))
         assert listed_after_restore.status_code == 200
         restored_item = next(item for item in listed_after_restore.json() if item["row_id"] == row_id)
         assert restored_item["is_active"] is True
+
+        outsider = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=_auth("other_trainer", role="trainer"),
+        )
+        assert outsider.status_code == 403
 
 
 def test_exercise_video_upload_requires_s3_configuration() -> None:
@@ -319,11 +332,11 @@ def test_exercise_video_upload_requires_s3_configuration() -> None:
     }
     with _client() as client:
         _install_test_stubs()
-        created = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
+        created = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id), json=payload)
         assert created.status_code == 201
         row_id = created.json()["row_id"]
         response = client.post(
-            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/video",
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/video", headers=_catalog(trainer_user_id),
             files={"file": ("demo.mp4", b"fake-video-bytes", "video/mp4")},
         )
         assert response.status_code == 503
@@ -361,7 +374,7 @@ def test_exercise_video_upload_and_delete_success() -> None:
     }
     with _client() as client:
         _install_test_stubs()
-        created = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
+        created = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id), json=payload)
         assert created.status_code == 201
         row_id = created.json()["row_id"]
         assert created.json().get("video_url") is None
@@ -371,7 +384,7 @@ def test_exercise_video_upload_and_delete_success() -> None:
         app.state.plan_handler._runtime._video_storage = fake_storage
 
         uploaded = client.post(
-            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/video",
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/video", headers=_catalog(trainer_user_id),
             files={"file": ("demo.mp4", b"fake-video-bytes", "video/mp4")},
         )
         assert uploaded.status_code == 200
@@ -379,7 +392,7 @@ def test_exercise_video_upload_and_delete_success() -> None:
         assert video_url == f"/api/v1/trainers/media/videos/trainer_video_2/{row_id}/fake.mp4"
         assert uploaded.json()["row_id"] == row_id
 
-        listed = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises")
+        listed = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id))
         assert listed.status_code == 200
         item = next(row for row in listed.json() if row["row_id"] == row_id)
         assert item["video_url"] == video_url
@@ -389,11 +402,11 @@ def test_exercise_video_upload_and_delete_success() -> None:
         assert media.content == b"video-bytes"
         assert media.headers["content-type"].startswith("video/mp4")
 
-        deleted = client.delete(f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/video")
+        deleted = client.delete(f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/video", headers=_catalog(trainer_user_id))
         assert deleted.status_code == 204
         assert fake_storage.deleted == [f"videos/trainer_video_2/{row_id}/fake.mp4"]
 
-        listed_after = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises")
+        listed_after = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id))
         item_after = next(row for row in listed_after.json() if row["row_id"] == row_id)
         assert item_after["video_url"] is None
 
@@ -410,8 +423,8 @@ def test_trainer_catalog_allows_same_name_twice() -> None:
     }
     with _client() as client:
         _install_test_stubs()
-        first = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
-        second = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
+        first = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id), json=payload)
+        second = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id), json=payload)
         assert first.status_code == 201
         assert second.status_code == 201
         assert first.json()["row_id"] != second.json()["row_id"]
@@ -429,7 +442,7 @@ def test_trainer_catalog_rejects_cardio_workout_category() -> None:
     }
     with _client() as client:
         _install_test_stubs()
-        response = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", json=payload)
+        response = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id), json=payload)
         assert response.status_code == 422
 
 
@@ -437,7 +450,7 @@ def test_trainer_catalog_auto_seeds_baseline_for_new_trainer() -> None:
     trainer_user_id = "trainer_new_baseline"
     with _client() as client:
         _install_test_stubs()
-        listed = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises")
+        listed = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id))
         assert listed.status_code == 200
         body = listed.json()
         assert len(body) > 0
@@ -453,7 +466,7 @@ def test_trainer_baseline_copies_from_platform_catalog() -> None:
 
     with _client() as client:
         _install_test_stubs()
-        listed = client.get("/api/v1/trainers/trainer_from_platform/exercises")
+        listed = client.get("/api/v1/trainers/trainer_from_platform/exercises", headers=_catalog("trainer_from_platform"))
         assert listed.status_code == 200
         trainer_names = {item["exercise_name"] for item in listed.json()}
         assert "Отжимания" in trainer_names
@@ -501,7 +514,7 @@ def test_client_loads_and_scheme_affect_generated_plan() -> None:
     with _client() as client:
         _install_test_stubs()
         created = client.post(
-            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id),
             json={
                 "exercise_name": "Жим лёжа",
                 "equipment": "barbell",
@@ -558,7 +571,7 @@ def test_upsert_load_patches_incomplete_active_plan_days() -> None:
     with _client() as client:
         _install_test_stubs()
         created = client.post(
-            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id),
             json={
                 "exercise_name": "Жим реактивный",
                 "equipment": "barbell",
@@ -676,7 +689,7 @@ def test_unavailable_equipment_excludes_matching_exercises() -> None:
     with _client() as client:
         _install_test_stubs()
         barbell = client.post(
-            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id),
             json={
                 "exercise_name": "Жим штанги",
                 "equipment": "barbell",
@@ -690,7 +703,7 @@ def test_unavailable_equipment_excludes_matching_exercises() -> None:
             },
         )
         bodyweight = client.post(
-            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id),
             json={
                 "exercise_name": "Отжимания тест",
                 "equipment": "none",
@@ -704,7 +717,7 @@ def test_unavailable_equipment_excludes_matching_exercises() -> None:
             },
         )
         custom = client.post(
-            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id),
             json={
                 "exercise_name": "Аэробайк",
                 "equipment": "Аэробайк",
@@ -1043,6 +1056,24 @@ def test_generate_system_replaces_previous_trainer_plan() -> None:
         assert active.json()["plan_id"] == system_plan.json()["plan_id"]
         assert active.json()["source"] == "system"
 
+        from sqlalchemy import func, select
+
+        from application.models import TrainingPlanModel
+
+        session = app.state.plan_handler._runtime._db_manager.create_session()
+        try:
+            active_count = session.execute(
+                select(func.count())
+                .select_from(TrainingPlanModel)
+                .where(
+                    TrainingPlanModel.user_id == "client_switch_1",
+                    TrainingPlanModel.status == "active",
+                )
+            ).scalar_one()
+            assert active_count == 1
+        finally:
+            session.close()
+
 
 def test_generate_trainer_compat_without_source_field() -> None:
     """Legacy clients that omit source still get trainer plans."""
@@ -1081,7 +1112,7 @@ def test_new_trainer_clones_support_added_platform_exercise() -> None:
         )
         assert created.status_code == 201
 
-        listed = client.get("/api/v1/trainers/trainer_after_support_add/exercises")
+        listed = client.get("/api/v1/trainers/trainer_after_support_add/exercises", headers=_catalog("trainer_after_support_add"))
         assert listed.status_code == 200
         names = {item["exercise_name"] for item in listed.json()}
         assert "Support Unique Move" in names

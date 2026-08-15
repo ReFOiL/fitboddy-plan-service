@@ -40,6 +40,15 @@ def _str_enum(enum_cls: type[_E], *, name: str) -> SAEnum:
 
 class TrainingPlanModel(Base):
     __tablename__ = "training_plans"
+    __table_args__ = (
+        Index(
+            "uq_training_plans_one_active_per_user",
+            "user_id",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
 
     plan_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="trainer", index=True)

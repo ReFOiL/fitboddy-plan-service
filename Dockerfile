@@ -9,11 +9,11 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir "poetry>=1.8,<2.0"
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml poetry.lock README.md ./
 COPY lib ./lib
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
-RUN poetry install --only main
+RUN poetry install --only main --no-root
 
 EXPOSE 8000
 

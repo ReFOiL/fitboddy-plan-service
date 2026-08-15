@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from application.generation import GenerationOrchestrator, PlanGenerationInput, SeedCatalogProvider
@@ -226,55 +227,59 @@ class PlanService:
         if not sessions:
             raise ValidationError("failed to build workout schedule")
 
-        self._plans.replace_active(command.user_id)
-        plan_id = str(uuid4())
-        plan_model = self._plans.add(
-            TrainingPlanModel(
-                plan_id=plan_id,
-                source=source,
-                trainer_user_id=command.trainer_user_id,
-                user_id=command.user_id,
-                status="active",
-                goal=goal.value,
-                level=level.name.lower(),
-                workouts_per_week=workouts_per_week,
-                start_date=min(item.scheduled_for for item in sessions),
-                end_date=max(item.scheduled_for for item in sessions),
-            )
-        )
-        day_index = 1
-        for session in sorted(sessions, key=lambda item: item.scheduled_for):
-            day_model = self._days.add(
-                PlanDayModel(
-                    day_id=str(uuid4()),
+        try:
+            self._plans.replace_active(command.user_id)
+            plan_id = str(uuid4())
+            plan_model = self._plans.add(
+                TrainingPlanModel(
                     plan_id=plan_id,
-                    day_index=day_index,
-                    scheduled_for=session.scheduled_for,
-                    week=session.week,
-                    day_of_week=session.day_of_week,
-                    volume_multiplier=session.volume_multiplier,
+                    source=source,
+                    trainer_user_id=command.trainer_user_id,
+                    user_id=command.user_id,
+                    status="active",
+                    goal=goal.value,
+                    level=level.name.lower(),
+                    workouts_per_week=workouts_per_week,
+                    start_date=min(item.scheduled_for for item in sessions),
+                    end_date=max(item.scheduled_for for item in sessions),
                 )
             )
-            day_index += 1
-            for line in session.lines:
-                self._lines.add(
-                    PlanExerciseModel(
-                        line_id=str(uuid4()),
-                        day_id=day_model.day_id,
-                        exercise_id=line.exercise.exercise_id,
-                        exercise_name=line.exercise.name,
-                        category=line.exercise.workout_category,
-                        is_cardio=line.exercise.is_cardio,
-                        sort_order=line.sort_order,
-                        sets=line.sets,
-                        reps=line.reps,
-                        duration_seconds=line.duration_seconds,
-                        rest_seconds=line.rest_seconds,
-                        weight_kg=line.weight_kg,
-                        set_prescriptions_json=self._mapper.dumps_set_prescriptions(line.set_prescriptions),
+            day_index = 1
+            for session in sorted(sessions, key=lambda item: item.scheduled_for):
+                day_model = self._days.add(
+                    PlanDayModel(
+                        day_id=str(uuid4()),
+                        plan_id=plan_id,
+                        day_index=day_index,
+                        scheduled_for=session.scheduled_for,
+                        week=session.week,
+                        day_of_week=session.day_of_week,
+                        volume_multiplier=session.volume_multiplier,
                     )
                 )
-        self._session.commit()
+                day_index += 1
+                for line in session.lines:
+                    self._lines.add(
+                        PlanExerciseModel(
+                            line_id=str(uuid4()),
+                            day_id=day_model.day_id,
+                            exercise_id=line.exercise.exercise_id,
+                            exercise_name=line.exercise.name,
+                            category=line.exercise.workout_category,
+                            is_cardio=line.exercise.is_cardio,
+                            sort_order=line.sort_order,
+                            sets=line.sets,
+                            reps=line.reps,
+                            duration_seconds=line.duration_seconds,
+                            rest_seconds=line.rest_seconds,
+                            weight_kg=line.weight_kg,
+                            set_prescriptions_json=self._mapper.dumps_set_prescriptions(line.set_prescriptions),
+                        )
+                    )
+            self._session.commit()
+        except IntegrityError as exc:
+            self._session.rollback()
+            raise ConflictError("user already has an active plan") from exc
         plan = self._mapper.to_domain(plan_model)
         return replace(
             plan,
@@ -305,6 +310,12 @@ class PlanService:
         plan = self._plans.find_active_by_user(command.user_id)
         if plan is None:
             raise PlanNotFoundError("active plan not found")
+        return self._mapper.to_domain(plan)
+
+    def require_plan(self, plan_id: str) -> TrainingPlan:
+        plan = self._plans.find_by_id(plan_id)
+        if plan is None:
+            raise PlanNotFoundError("plan not found")
         return self._mapper.to_domain(plan)
 
     def get_plan_day(self, command: GetPlanDayCommand) -> PlanDay:
