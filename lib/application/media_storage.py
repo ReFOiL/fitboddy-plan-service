@@ -24,7 +24,9 @@ class S3MediaStorage:
     bucket: str
     secure: bool
     videos_prefix: str = "videos/"
+    photos_prefix: str = "photos/"
     max_video_size_bytes: int = 200 * 1024 * 1024
+    max_photo_size_bytes: int = 15 * 1024 * 1024
     _client: Minio = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -38,9 +40,26 @@ class S3MediaStorage:
     async def upload_video(self, *, owner_id: str, row_id: str, filename: str, data: bytes) -> str:
         ext, content_type = self._validate_video(filename=filename, data=data)
         object_name = await anyio.to_thread.run_sync(
-            self._generate_unique_video_object_name,
-            owner_id,
-            row_id,
+            self._generate_unique_object_name,
+            f"{self.videos_prefix}{owner_id}/{row_id}/",
+            ext,
+        )
+        await anyio.to_thread.run_sync(self._put_object_sync, object_name, data, content_type)
+        return object_name
+
+    async def upload_photo(
+        self,
+        *,
+        owner_id: str,
+        row_id: str,
+        filename: str,
+        data: bytes,
+        position: str,
+    ) -> str:
+        ext, content_type = self._validate_photo(filename=filename, data=data)
+        object_name = await anyio.to_thread.run_sync(
+            self._generate_unique_object_name,
+            f"{self.photos_prefix}{owner_id}/{row_id}/{position}/",
             ext,
         )
         await anyio.to_thread.run_sync(self._put_object_sync, object_name, data, content_type)
@@ -85,9 +104,9 @@ class S3MediaStorage:
         except Exception as exc:  # pragma: no cover
             raise IntegrationError("failed to delete media from s3") from exc
 
-    def _generate_unique_video_object_name(self, owner_id: str, row_id: str, ext: str) -> str:
+    def _generate_unique_object_name(self, key_prefix: str, ext: str) -> str:
         for _ in range(5):
-            candidate = f"{self.videos_prefix}{owner_id}/{row_id}/{uuid4().hex}{ext}"
+            candidate = f"{key_prefix}{uuid4().hex}{ext}"
             if not self._object_exists(candidate):
                 return candidate
         raise IntegrationError("failed to generate unique media key")
@@ -112,4 +131,19 @@ class S3MediaStorage:
         content_type = allowed.get(ext)
         if content_type is None:
             raise MediaValidationError("invalid video format (allowed: .mp4, .mov)")
+        return ext, content_type
+
+    def _validate_photo(self, *, filename: str, data: bytes) -> tuple[str, str]:
+        if len(data) > self.max_photo_size_bytes:
+            raise MediaValidationError("photo is too large (max 15MB)")
+        ext = Path(filename).suffix.lower()
+        allowed: dict[str, str] = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+        }
+        content_type = allowed.get(ext)
+        if content_type is None:
+            raise MediaValidationError("invalid photo format (allowed: .jpg, .jpeg, .png, .webp)")
         return ext, content_type

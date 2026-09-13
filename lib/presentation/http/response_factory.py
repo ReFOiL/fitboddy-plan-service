@@ -158,6 +158,8 @@ class PlanResponseFactory:
             scheme_steps=list(exercise.scheme_steps),
             is_active=exercise.is_active,
             video_url=exercise.video_url,
+            start_image_url=exercise.start_image_url,
+            end_image_url=exercise.end_image_url,
             created_at=exercise.created_at,
             updated_at=exercise.updated_at,
             primary_muscles=list(exercise.primary_muscles),

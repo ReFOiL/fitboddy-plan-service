@@ -20,3 +20,4 @@ class Settings(BaseSettings):
     s3_bucket: str = Field(default="fitboddy-media", alias="S3_BUCKET")
     s3_secure: bool = Field(default=False, alias="S3_SECURE")
     s3_videos_prefix: str = Field(default="videos/", alias="S3_VIDEOS_PREFIX")
+    s3_photos_prefix: str = Field(default="photos/", alias="S3_PHOTOS_PREFIX")

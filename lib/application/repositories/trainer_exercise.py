@@ -91,6 +91,8 @@ class TrainerExerciseRepository:
                     load_scheme=item.load_scheme or "flat",
                     scheme_steps_json=item.scheme_steps_json,
                     video_url=item.video_url,
+                    start_image_url=item.start_image_url,
+                    end_image_url=item.end_image_url,
                     is_active=True,
                 )
             )

@@ -14,11 +14,13 @@ from presentation.http.schemas import (
     AdminExerciseListResponse,
     AdminPlatformExerciseListResponse,
     ClientExerciseLoadResponse,
+    ExercisePhotoUploadResponse,
     ExerciseVideoUploadResponse,
     GeneratePlanRequest,
     GenerationPolicyResponse,
     MuscleResponse,
     PlanDayResponse,
+    PlatformExercisePhotoUploadResponse,
     PlatformExerciseResponse,
     PlatformExerciseVideoUploadResponse,
     TodayWorkoutResponse,
@@ -396,8 +398,86 @@ class PlanHttpHandler:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
+    async def upload_trainer_exercise_photo(
+        self,
+        *,
+        authorization: str | None,
+        trainer_user_id: str,
+        row_id: str,
+        position: str,
+        filename: str,
+        data: bytes,
+    ) -> ExercisePhotoUploadResponse:
+        try:
+            self._require_self_trainer(authorization, trainer_user_id)
+            photo_position = self._normalize_photo_position(position)
+            storage = self._runtime.video_storage
+            if storage is None:
+                raise IntegrationError("s3 media storage is not configured")
+            object_key = await storage.upload_photo(
+                owner_id=trainer_user_id,
+                row_id=row_id,
+                filename=filename,
+                data=data,
+                position=photo_position,
+            )
+            image_url = f"{_MEDIA_PREFIX}{quote(object_key, safe='/')}"
+            with self._runtime.plan_service_scope() as plan_service:
+                _, previous_image_url = plan_service.set_trainer_exercise_photo_url(
+                    trainer_user_id,
+                    row_id,
+                    photo_position,
+                    image_url,
+                )
+            previous_object_key = self._extract_object_key(previous_image_url)
+            if previous_object_key and previous_object_key != object_key:
+                try:
+                    await storage.delete_media(previous_object_key)
+                except PlanError:
+                    pass
+            return ExercisePhotoUploadResponse(
+                trainer_user_id=trainer_user_id,
+                row_id=row_id,
+                position=photo_position,
+                image_url=image_url,
+            )
+        except MediaValidationError as exc:
+            self._error_translator.raise_http_error(ValidationError(str(exc)))
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    async def delete_trainer_exercise_photo(
+        self,
+        *,
+        authorization: str | None,
+        trainer_user_id: str,
+        row_id: str,
+        position: str,
+    ) -> None:
+        try:
+            self._require_self_trainer(authorization, trainer_user_id)
+            photo_position = self._normalize_photo_position(position)
+            storage = self._runtime.video_storage
+            with self._runtime.plan_service_scope() as plan_service:
+                _, previous_image_url = plan_service.clear_trainer_exercise_photo_url(
+                    trainer_user_id,
+                    row_id,
+                    photo_position,
+                )
+            object_key = self._extract_object_key(previous_image_url)
+            if object_key and storage is not None:
+                try:
+                    await storage.delete_media(object_key)
+                except PlanError:
+                    pass
+            return
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
     async def get_media(self, object_key: str) -> Response:
-        if not self._is_allowed_video_key(object_key):
+        if not self._is_allowed_media_key(object_key):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="media key is not allowed")
         storage = self._runtime.video_storage
         if storage is None:
@@ -571,6 +651,76 @@ class PlanHttpHandler:
             with self._runtime.plan_service_scope() as plan_service:
                 _, previous_video_url = plan_service.clear_platform_exercise_video_url(row_id)
             object_key = self._extract_object_key(previous_video_url)
+            if object_key and storage is not None:
+                try:
+                    await storage.delete_media(object_key)
+                except PlanError:
+                    pass
+            return
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    async def admin_upload_platform_exercise_photo(
+        self,
+        *,
+        authorization: str | None,
+        row_id: str,
+        position: str,
+        filename: str,
+        data: bytes,
+    ) -> PlatformExercisePhotoUploadResponse:
+        try:
+            self._require_platform_admin(authorization)
+            photo_position = self._normalize_photo_position(position)
+            storage = self._runtime.video_storage
+            if storage is None:
+                raise IntegrationError("s3 media storage is not configured")
+            object_key = await storage.upload_photo(
+                owner_id="platform",
+                row_id=row_id,
+                filename=filename,
+                data=data,
+                position=photo_position,
+            )
+            image_url = f"{_MEDIA_PREFIX}{quote(object_key, safe='/')}"
+            with self._runtime.plan_service_scope() as plan_service:
+                _, previous_image_url = plan_service.set_platform_exercise_photo_url(
+                    row_id,
+                    photo_position,
+                    image_url,
+                )
+            previous_object_key = self._extract_object_key(previous_image_url)
+            if previous_object_key and previous_object_key != object_key:
+                try:
+                    await storage.delete_media(previous_object_key)
+                except PlanError:
+                    pass
+            return PlatformExercisePhotoUploadResponse(
+                row_id=row_id,
+                position=photo_position,
+                image_url=image_url,
+            )
+        except MediaValidationError as exc:
+            self._error_translator.raise_http_error(ValidationError(str(exc)))
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    async def admin_delete_platform_exercise_photo(
+        self,
+        *,
+        authorization: str | None,
+        row_id: str,
+        position: str,
+    ) -> None:
+        try:
+            self._require_platform_admin(authorization)
+            photo_position = self._normalize_photo_position(position)
+            storage = self._runtime.video_storage
+            with self._runtime.plan_service_scope() as plan_service:
+                _, previous_image_url = plan_service.clear_platform_exercise_photo_url(row_id, photo_position)
+            object_key = self._extract_object_key(previous_image_url)
             if object_key and storage is not None:
                 try:
                     await storage.delete_media(object_key)
@@ -759,18 +909,25 @@ class PlanHttpHandler:
         return token
 
     @staticmethod
-    def _extract_object_key(video_url: str | None) -> str | None:
-        if not video_url:
+    def _normalize_photo_position(position: str) -> str:
+        normalized = position.strip().lower()
+        if normalized not in {"start", "end"}:
+            raise ValidationError("invalid photo position (allowed: start, end)")
+        return normalized
+
+    @staticmethod
+    def _extract_object_key(media_url: str | None) -> str | None:
+        if not media_url:
             return None
-        if video_url.startswith(_MEDIA_PREFIX):
-            return unquote(video_url[len(_MEDIA_PREFIX) :])
-        if video_url.startswith("videos/"):
-            return video_url
+        if media_url.startswith(_MEDIA_PREFIX):
+            return unquote(media_url[len(_MEDIA_PREFIX) :])
+        if media_url.startswith("videos/") or media_url.startswith("photos/"):
+            return media_url
         return None
 
     @staticmethod
-    def _is_allowed_video_key(object_key: str) -> bool:
+    def _is_allowed_media_key(object_key: str) -> bool:
         normalized = object_key.replace("\\", "/").lstrip("/")
         if not normalized or any(part == ".." for part in normalized.split("/")):
             return False
-        return normalized.startswith("videos/")
+        return normalized.startswith("videos/") or normalized.startswith("photos/")

@@ -715,6 +715,8 @@ class PlanService:
             scheme_steps_json=self._mapper.dumps_scheme_steps(steps),
             is_active=True,
             video_url=None,
+            start_image_url=None,
+            end_image_url=None,
         )
         self._trainer_exercises.add(model)
         self._exercise_muscles.replace_trainer_muscles(
@@ -873,6 +875,8 @@ class PlanService:
             scheme_steps_json=self._mapper.dumps_scheme_steps(steps),
             is_active=True,
             video_url=None,
+            start_image_url=None,
+            end_image_url=None,
         )
         self._platform_exercises.add(model)
         self._exercise_muscles.replace_platform_muscles(
@@ -1023,6 +1027,78 @@ class PlanService:
         self._session.commit()
         self._session.refresh(model)
         return self._mapper.platform_exercise_to_domain(model), previous_video_url
+
+    def set_trainer_exercise_photo_url(
+        self,
+        trainer_user_id: str,
+        row_id: str,
+        position: str,
+        image_url: str,
+    ) -> tuple[TrainerExercise, str | None]:
+        model = self._trainer_exercises.find_by_trainer_and_row_id(trainer_user_id, row_id)
+        if model is None:
+            raise TrainerExerciseNotFoundError("trainer exercise not found")
+        field = self._photo_url_field(position)
+        previous_image_url = getattr(model, field)
+        setattr(model, field, image_url)
+        self._session.commit()
+        self._session.refresh(model)
+        return self._mapper.trainer_exercise_to_domain(model), previous_image_url
+
+    def clear_trainer_exercise_photo_url(
+        self,
+        trainer_user_id: str,
+        row_id: str,
+        position: str,
+    ) -> tuple[TrainerExercise, str | None]:
+        model = self._trainer_exercises.find_by_trainer_and_row_id(trainer_user_id, row_id)
+        if model is None:
+            raise TrainerExerciseNotFoundError("trainer exercise not found")
+        field = self._photo_url_field(position)
+        previous_image_url = getattr(model, field)
+        setattr(model, field, None)
+        self._session.commit()
+        self._session.refresh(model)
+        return self._mapper.trainer_exercise_to_domain(model), previous_image_url
+
+    def set_platform_exercise_photo_url(
+        self,
+        row_id: str,
+        position: str,
+        image_url: str,
+    ) -> tuple[PlatformExercise, str | None]:
+        model = self._platform_exercises.find_by_row_id(row_id)
+        if model is None:
+            raise PlatformExerciseNotFoundError("platform exercise not found")
+        field = self._photo_url_field(position)
+        previous_image_url = getattr(model, field)
+        setattr(model, field, image_url)
+        self._session.commit()
+        self._session.refresh(model)
+        return self._mapper.platform_exercise_to_domain(model), previous_image_url
+
+    def clear_platform_exercise_photo_url(
+        self,
+        row_id: str,
+        position: str,
+    ) -> tuple[PlatformExercise, str | None]:
+        model = self._platform_exercises.find_by_row_id(row_id)
+        if model is None:
+            raise PlatformExerciseNotFoundError("platform exercise not found")
+        field = self._photo_url_field(position)
+        previous_image_url = getattr(model, field)
+        setattr(model, field, None)
+        self._session.commit()
+        self._session.refresh(model)
+        return self._mapper.platform_exercise_to_domain(model), previous_image_url
+
+    @staticmethod
+    def _photo_url_field(position: str) -> str:
+        if position == "start":
+            return "start_image_url"
+        if position == "end":
+            return "end_image_url"
+        raise ValidationError("invalid photo position (allowed: start, end)")
 
     @staticmethod
     def _normalize_workouts_per_week(value: int) -> int:

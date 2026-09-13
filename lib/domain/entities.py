@@ -86,6 +86,8 @@ class TrainerExercise:
     scheme_steps: list[float]
     is_active: bool
     video_url: str | None
+    start_image_url: str | None
+    end_image_url: str | None
     created_at: datetime
     updated_at: datetime
     primary_muscles: list[str]
@@ -112,6 +114,8 @@ class PlatformExercise:
     scheme_steps: list[float]
     is_active: bool
     video_url: str | None
+    start_image_url: str | None
+    end_image_url: str | None
     created_at: datetime
     updated_at: datetime
     primary_muscles: list[str]

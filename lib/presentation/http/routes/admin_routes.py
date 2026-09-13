@@ -5,6 +5,7 @@ from presentation.http.schemas import (
     AdminPlatformExerciseListResponse,
     ClientExerciseLoadResponse,
     GenerationPolicyResponse,
+    PlatformExercisePhotoUploadResponse,
     PlatformExerciseResponse,
     PlatformExerciseVideoUploadResponse,
     TrainingPlanResponse,
@@ -74,6 +75,18 @@ class AdminRoutes:
         self.router.add_api_route(
             "/platform-exercises/{row_id}/video",
             self.delete_platform_exercise_video,
+            methods=["DELETE"],
+            status_code=status.HTTP_204_NO_CONTENT,
+        )
+        self.router.add_api_route(
+            "/platform-exercises/{row_id}/photos/{position}",
+            self.upload_platform_exercise_photo,
+            methods=["POST"],
+            response_model=PlatformExercisePhotoUploadResponse,
+        )
+        self.router.add_api_route(
+            "/platform-exercises/{row_id}/photos/{position}",
+            self.delete_platform_exercise_photo,
             methods=["DELETE"],
             status_code=status.HTTP_204_NO_CONTENT,
         )
@@ -233,6 +246,37 @@ class AdminRoutes:
         await request.app.state.plan_handler.admin_delete_platform_exercise_video(
             authorization=authorization,
             row_id=row_id,
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    async def upload_platform_exercise_photo(
+        self,
+        row_id: str,
+        position: str,
+        request: Request,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+        file: UploadFile = File(...),
+    ) -> PlatformExercisePhotoUploadResponse:
+        data = await file.read()
+        return await request.app.state.plan_handler.admin_upload_platform_exercise_photo(
+            authorization=authorization,
+            row_id=row_id,
+            position=position,
+            filename=file.filename or "photo.jpg",
+            data=data,
+        )
+
+    async def delete_platform_exercise_photo(
+        self,
+        row_id: str,
+        position: str,
+        request: Request,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Response:
+        await request.app.state.plan_handler.admin_delete_platform_exercise_photo(
+            authorization=authorization,
+            row_id=row_id,
+            position=position,
         )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
