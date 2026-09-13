@@ -411,6 +411,129 @@ def test_exercise_video_upload_and_delete_success() -> None:
         assert item_after["video_url"] is None
 
 
+def test_exercise_photo_upload_requires_s3_configuration() -> None:
+    trainer_user_id = "trainer_photo_1"
+    payload = {
+        "exercise_name": "Photo Squat",
+        "equipment": "none",
+        "is_cardio": False,
+        "is_hold": False,
+        "difficulty": 2,
+        "workout_category": "lower",
+    }
+    with _client() as client:
+        _install_test_stubs()
+        created = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id), json=payload)
+        assert created.status_code == 201
+        row_id = created.json()["row_id"]
+        response = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/start",
+            headers=_catalog(trainer_user_id),
+            files={"file": ("start.jpg", b"fake-photo-bytes", "image/jpeg")},
+        )
+        assert response.status_code == 503
+        assert "not configured" in response.json()["detail"]
+
+
+def test_exercise_photo_upload_and_delete_success() -> None:
+    class _FakeStorage:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+            self.expected_row_id: str | None = None
+            self.uploaded: list[tuple[str, str]] = []
+            self._seq = 0
+
+        async def upload_photo(self, *, owner_id: str, row_id: str, filename: str, data: bytes, position: str) -> str:
+            assert owner_id == "trainer_photo_2"
+            assert row_id == self.expected_row_id
+            assert data
+            self.uploaded.append((position, filename))
+            self._seq += 1
+            suffix = filename.rsplit(".", 1)[-1] if "." in filename else "jpg"
+            return f"photos/{owner_id}/{row_id}/{position}/fake{self._seq}.{suffix}"
+
+        async def delete_media(self, object_name: str) -> None:
+            self.deleted.append(object_name)
+
+        async def download_media(self, object_name: str) -> tuple[bytes, str]:
+            assert "/fake" in object_name
+            return b"photo-bytes", "image/jpeg"
+
+    trainer_user_id = "trainer_photo_2"
+    payload = {
+        "exercise_name": "Photo Pushup",
+        "equipment": "none",
+        "is_cardio": False,
+        "is_hold": False,
+        "difficulty": 2,
+        "workout_category": "upper",
+    }
+    with _client() as client:
+        _install_test_stubs()
+        created = client.post(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id), json=payload)
+        assert created.status_code == 201
+        row_id = created.json()["row_id"]
+        assert created.json().get("start_image_url") is None
+        assert created.json().get("end_image_url") is None
+
+        fake_storage = _FakeStorage()
+        fake_storage.expected_row_id = row_id
+        app.state.plan_handler._runtime._video_storage = fake_storage
+
+        start_uploaded = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/start",
+            headers=_catalog(trainer_user_id),
+            files={"file": ("start.jpg", b"fake-start-bytes", "image/jpeg")},
+        )
+        assert start_uploaded.status_code == 200
+        start_url = start_uploaded.json()["image_url"]
+        assert start_uploaded.json()["position"] == "start"
+        assert start_url == f"/api/v1/trainers/media/photos/trainer_photo_2/{row_id}/start/fake1.jpg"
+
+        end_uploaded = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/end",
+            headers=_catalog(trainer_user_id),
+            files={"file": ("end.png", b"fake-end-bytes", "image/png")},
+        )
+        assert end_uploaded.status_code == 200
+        end_url = end_uploaded.json()["image_url"]
+        assert end_uploaded.json()["position"] == "end"
+        assert end_url == f"/api/v1/trainers/media/photos/trainer_photo_2/{row_id}/end/fake2.png"
+
+        listed = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id))
+        assert listed.status_code == 200
+        item = next(row for row in listed.json() if row["row_id"] == row_id)
+        assert item["start_image_url"] == start_url
+        assert item["end_image_url"] == end_url
+
+        media = client.get(start_url)
+        assert media.status_code == 200
+        assert media.content == b"photo-bytes"
+        assert media.headers["content-type"].startswith("image/jpeg")
+
+        replaced = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/start",
+            headers=_catalog(trainer_user_id),
+            files={"file": ("start2.jpg", b"replacement-bytes", "image/jpeg")},
+        )
+        assert replaced.status_code == 200
+        assert replaced.json()["image_url"] == f"/api/v1/trainers/media/photos/trainer_photo_2/{row_id}/start/fake3.jpg"
+        assert fake_storage.deleted == [f"photos/trainer_photo_2/{row_id}/start/fake1.jpg"]
+
+        deleted = client.delete(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/end",
+            headers=_catalog(trainer_user_id),
+        )
+        assert deleted.status_code == 204
+        assert fake_storage.deleted[-1] == f"photos/trainer_photo_2/{row_id}/end/fake2.png"
+
+        listed_after = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id))
+        item_after = next(row for row in listed_after.json() if row["row_id"] == row_id)
+        assert item_after["start_image_url"] == replaced.json()["image_url"]
+        assert item_after["end_image_url"] is None
+        app.state.plan_handler._runtime._video_storage = None
+
+
 def test_trainer_catalog_allows_same_name_twice() -> None:
     trainer_user_id = "trainer_catalog_2"
     payload = {
@@ -963,6 +1086,114 @@ def test_platform_exercise_video_upload_requires_s3_configuration() -> None:
         )
         assert response.status_code == 503
         assert "not configured" in response.json()["detail"]
+
+
+def test_platform_exercise_photo_upload_requires_s3_configuration() -> None:
+    with _client() as client:
+        _install_test_stubs()
+        _auth_as_platform_admin()
+        created = client.post(
+            "/api/v1/admin/platform-exercises",
+            json={
+                "exercise_name": "Platform Photo Squat",
+                "equipment": "none",
+                "is_cardio": False,
+                "is_hold": False,
+                "difficulty": 2,
+                "workout_category": "lower",
+                "catalog_key": "platform_photo_squat",
+            },
+            headers=_ADMIN_HEADERS,
+        )
+        assert created.status_code == 201
+        row_id = created.json()["row_id"]
+        response = client.post(
+            f"/api/v1/admin/platform-exercises/{row_id}/photos/start",
+            headers=_ADMIN_HEADERS,
+            files={"file": ("start.jpg", b"fake-photo-bytes", "image/jpeg")},
+        )
+        assert response.status_code == 503
+        assert "not configured" in response.json()["detail"]
+
+
+def test_platform_exercise_photo_upload_and_delete_success() -> None:
+    class _FakeStorage:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+            self.expected_row_id: str | None = None
+
+        async def upload_photo(self, *, owner_id: str, row_id: str, filename: str, data: bytes, position: str) -> str:
+            assert owner_id == "platform"
+            assert row_id == self.expected_row_id
+            assert filename == "end.webp"
+            assert data
+            assert position == "end"
+            return f"photos/{owner_id}/{row_id}/{position}/fake.webp"
+
+        async def delete_media(self, object_name: str) -> None:
+            self.deleted.append(object_name)
+
+        async def download_media(self, object_name: str) -> tuple[bytes, str]:
+            assert object_name == f"photos/platform/{self.expected_row_id}/end/fake.webp"
+            return b"platform-photo-bytes", "image/webp"
+
+    with _client() as client:
+        _install_test_stubs()
+        _auth_as_platform_admin()
+        created = client.post(
+            "/api/v1/admin/platform-exercises",
+            json={
+                "exercise_name": "Platform Photo Deadlift",
+                "equipment": "none",
+                "is_cardio": False,
+                "is_hold": False,
+                "difficulty": 3,
+                "workout_category": "full_body",
+                "catalog_key": "platform_photo_deadlift",
+            },
+            headers=_ADMIN_HEADERS,
+        )
+        assert created.status_code == 201
+        row_id = created.json()["row_id"]
+        assert created.json().get("start_image_url") is None
+        assert created.json().get("end_image_url") is None
+
+        fake_storage = _FakeStorage()
+        fake_storage.expected_row_id = row_id
+        app.state.plan_handler._runtime._video_storage = fake_storage
+
+        uploaded = client.post(
+            f"/api/v1/admin/platform-exercises/{row_id}/photos/end",
+            headers=_ADMIN_HEADERS,
+            files={"file": ("end.webp", b"fake-photo-bytes", "image/webp")},
+        )
+        assert uploaded.status_code == 200
+        image_url = uploaded.json()["image_url"]
+        assert uploaded.json()["position"] == "end"
+        assert image_url == f"/api/v1/trainers/media/photos/platform/{row_id}/end/fake.webp"
+
+        listed = client.get("/api/v1/platform-exercises")
+        assert listed.status_code == 200
+        item = next(row for row in listed.json() if row["row_id"] == row_id)
+        assert item["end_image_url"] == image_url
+        assert item["start_image_url"] is None
+
+        media = client.get(image_url)
+        assert media.status_code == 200
+        assert media.content == b"platform-photo-bytes"
+        assert media.headers["content-type"].startswith("image/webp")
+
+        deleted = client.delete(
+            f"/api/v1/admin/platform-exercises/{row_id}/photos/end",
+            headers=_ADMIN_HEADERS,
+        )
+        assert deleted.status_code == 204
+        assert fake_storage.deleted == [f"photos/platform/{row_id}/end/fake.webp"]
+
+        listed_after = client.get("/api/v1/platform-exercises")
+        item_after = next(row for row in listed_after.json() if row["row_id"] == row_id)
+        assert item_after["end_image_url"] is None
+        app.state.plan_handler._runtime._video_storage = None
 
 
 def test_generate_system_plan_without_trainer() -> None:

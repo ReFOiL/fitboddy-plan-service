@@ -149,6 +149,8 @@ class TrainerExerciseModel(Base):
     scheme_steps_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
     video_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    start_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    end_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False),
@@ -186,6 +188,8 @@ class PlatformExerciseModel(Base):
     scheme_steps_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
     video_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    start_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    end_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False),

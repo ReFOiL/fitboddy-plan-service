@@ -198,6 +198,8 @@ class TrainerExerciseResponse(BaseModel):
     scheme_steps: list[float] = Field(default_factory=list)
     is_active: bool
     video_url: str | None = None
+    start_image_url: str | None = None
+    end_image_url: str | None = None
     created_at: datetime
     updated_at: datetime
     primary_muscles: list[str] = Field(default_factory=list)
@@ -210,9 +212,22 @@ class ExerciseVideoUploadResponse(BaseModel):
     video_url: str
 
 
+class ExercisePhotoUploadResponse(BaseModel):
+    trainer_user_id: str
+    row_id: str
+    position: Literal["start", "end"]
+    image_url: str
+
+
 class PlatformExerciseVideoUploadResponse(BaseModel):
     row_id: str
     video_url: str
+
+
+class PlatformExercisePhotoUploadResponse(BaseModel):
+    row_id: str
+    position: Literal["start", "end"]
+    image_url: str
 
 
 class AdminExerciseListResponse(BaseModel):
@@ -241,6 +256,8 @@ class PlatformExerciseResponse(BaseModel):
     scheme_steps: list[float] = Field(default_factory=list)
     is_active: bool
     video_url: str | None = None
+    start_image_url: str | None = None
+    end_image_url: str | None = None
     created_at: datetime
     updated_at: datetime
     primary_muscles: list[str] = Field(default_factory=list)

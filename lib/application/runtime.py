@@ -80,4 +80,5 @@ class PlanApplicationRuntime:
             bucket=settings.s3_bucket,
             secure=settings.s3_secure,
             videos_prefix=settings.s3_videos_prefix,
+            photos_prefix=settings.s3_photos_prefix,
         )

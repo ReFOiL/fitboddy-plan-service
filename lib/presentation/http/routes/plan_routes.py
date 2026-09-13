@@ -2,6 +2,7 @@ from fastapi import APIRouter, File, Header, Query, Request, Response, UploadFil
 
 from presentation.http.schemas import (
     ClientExerciseLoadResponse,
+    ExercisePhotoUploadResponse,
     ExerciseVideoUploadResponse,
     GeneratePlanRequest,
     GenerationPolicyResponse,
@@ -123,6 +124,19 @@ class PlanRoutes:
         self.router.add_api_route(
             "/trainers/{trainer_user_id}/exercises/{row_id}/video",
             self.delete_trainer_exercise_video,
+            methods=["DELETE"],
+            status_code=status.HTTP_204_NO_CONTENT,
+            response_class=Response,
+        )
+        self.router.add_api_route(
+            "/trainers/{trainer_user_id}/exercises/{row_id}/photos/{position}",
+            self.upload_trainer_exercise_photo,
+            methods=["POST"],
+            response_model=ExercisePhotoUploadResponse,
+        )
+        self.router.add_api_route(
+            "/trainers/{trainer_user_id}/exercises/{row_id}/photos/{position}",
+            self.delete_trainer_exercise_photo,
             methods=["DELETE"],
             status_code=status.HTTP_204_NO_CONTENT,
             response_class=Response,
@@ -364,6 +378,41 @@ class PlanRoutes:
             authorization=authorization,
             trainer_user_id=trainer_user_id,
             row_id=row_id,
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @staticmethod
+    async def upload_trainer_exercise_photo(
+        request: Request,
+        trainer_user_id: str,
+        row_id: str,
+        position: str,
+        file: UploadFile = File(...),
+        authorization: str | None = Header(default=None),
+    ) -> ExercisePhotoUploadResponse:
+        data = await file.read()
+        return await request.app.state.plan_handler.upload_trainer_exercise_photo(
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+            row_id=row_id,
+            position=position,
+            filename=file.filename or "photo.jpg",
+            data=data,
+        )
+
+    @staticmethod
+    async def delete_trainer_exercise_photo(
+        request: Request,
+        trainer_user_id: str,
+        row_id: str,
+        position: str,
+        authorization: str | None = Header(default=None),
+    ) -> Response:
+        await request.app.state.plan_handler.delete_trainer_exercise_photo(
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+            row_id=row_id,
+            position=position,
         )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
