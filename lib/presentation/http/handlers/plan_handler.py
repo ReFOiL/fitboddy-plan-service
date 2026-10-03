@@ -1,12 +1,25 @@
-from urllib.parse import quote, unquote
+import hashlib
+import logging
+import time
 
 from fastapi import HTTPException, Response, status
+from fastapi.responses import StreamingResponse
 
 from application.errors import ForbiddenError, IntegrationError, PlanError, UnauthorizedError, ValidationError
 from application.gateways import AuthUser
 from application.generation.policy import GenerationPolicyConfig
-from application.media_storage import MediaValidationError
+from application.media_keys import (
+    PLATFORM_MEDIA_OWNER,
+    etag_matches,
+    is_internal_media_key,
+    is_safe_object_key,
+    media_key_owned_by,
+    normalize_stored_media,
+)
+from application.media_storage import MediaValidationError, OpenedMedia, validate_photo_bytes
+from application.media_urls import MediaUrlSigner
 from application.runtime import PlanApplicationRuntime
+from domain.entities import PlatformExercise, TrainerExercise
 from presentation.http.error_translator import ErrorTranslator
 from presentation.http.request_factory import PlanRequestFactory
 from presentation.http.response_factory import PlanResponseFactory
@@ -32,7 +45,7 @@ from presentation.http.schemas import (
     UpsertTrainerExerciseRequest,
 )
 
-_MEDIA_PREFIX = "/api/v1/trainers/media/"
+logger = logging.getLogger(__name__)
 
 
 class PlanHttpHandler:
@@ -148,7 +161,7 @@ class PlanHttpHandler:
                 items = plan_service.list_trainer_exercises(
                     self._request_factory.to_list_trainer_exercises_command(trainer_user_id, include_archived)
                 )
-                return [TrainerExerciseResponse.model_validate(item, from_attributes=True) for item in items]
+                return [self._trainer_exercise_response(item) for item in items]
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
@@ -240,7 +253,7 @@ class PlanHttpHandler:
         try:
             with self._runtime.plan_service_scope() as plan_service:
                 items = plan_service.list_active_platform_exercises()
-                return [self._response_factory.from_domain_platform_exercise(item) for item in items]
+                return [self._platform_exercise_response(item) for item in items]
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
@@ -249,7 +262,7 @@ class PlanHttpHandler:
         try:
             with self._runtime.plan_service_scope() as plan_service:
                 item = plan_service.get_active_platform_exercise(row_id)
-                return self._response_factory.from_domain_platform_exercise(item)
+                return self._platform_exercise_response(item)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
@@ -267,7 +280,7 @@ class PlanHttpHandler:
                 item = plan_service.add_trainer_exercise(
                     self._request_factory.to_add_trainer_exercise_command(trainer_user_id, payload)
                 )
-                return TrainerExerciseResponse.model_validate(item, from_attributes=True)
+                return self._trainer_exercise_response(item)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
@@ -283,7 +296,7 @@ class PlanHttpHandler:
             self._require_self_trainer(authorization, trainer_user_id)
             with self._runtime.plan_service_scope() as plan_service:
                 item = plan_service.get_trainer_exercise(trainer_user_id, row_id)
-                return TrainerExerciseResponse.model_validate(item, from_attributes=True)
+                return self._trainer_exercise_response(item)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
@@ -302,19 +315,16 @@ class PlanHttpHandler:
                 item = plan_service.update_trainer_exercise(
                     self._request_factory.to_update_trainer_exercise_command(trainer_user_id, row_id, payload)
                 )
-                return TrainerExerciseResponse.model_validate(item, from_attributes=True)
+                return self._trainer_exercise_response(item)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
-    def archive_trainer_exercise(self, *, authorization: str | None, trainer_user_id: str, row_id: str) -> None:
+    async def archive_trainer_exercise(self, *, authorization: str | None, trainer_user_id: str, row_id: str) -> None:
         try:
             self._require_self_trainer(authorization, trainer_user_id)
-            with self._runtime.plan_service_scope() as plan_service:
-                plan_service.archive_trainer_exercise(
-                    self._request_factory.to_archive_trainer_exercise_command(trainer_user_id, row_id)
-                )
-                return
+            await self._archive_trainer_and_release_media(trainer_user_id, row_id)
+            return
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
@@ -341,33 +351,27 @@ class PlanHttpHandler:
         data: bytes,
     ) -> ExerciseVideoUploadResponse:
         try:
-            self._require_self_trainer(authorization, trainer_user_id)
-            storage = self._runtime.video_storage
-            if storage is None:
-                raise IntegrationError("s3 media storage is not configured")
+            self._require_trainer_owner(authorization, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                plan_service.get_trainer_exercise(trainer_user_id, row_id)
+            storage = self._require_storage()
             object_key = await storage.upload_video(
                 owner_id=trainer_user_id,
                 row_id=row_id,
                 filename=filename,
                 data=data,
             )
-            video_url = f"{_MEDIA_PREFIX}{quote(object_key, safe='/')}"
-            with self._runtime.plan_service_scope() as plan_service:
-                _, previous_video_url = plan_service.set_trainer_exercise_video_url(
-                    trainer_user_id,
-                    row_id,
-                    video_url,
-                )
-            previous_object_key = self._extract_object_key(previous_video_url)
-            if previous_object_key and previous_object_key != object_key:
-                try:
-                    await storage.delete_media(previous_object_key)
-                except PlanError:
-                    pass
+            try:
+                with self._runtime.plan_service_scope() as plan_service:
+                    _, previous = plan_service.set_trainer_exercise_video_url(trainer_user_id, row_id, object_key)
+            except Exception:
+                await self._delete_uploaded_object(storage, object_key)
+                raise
+            await self._release_replaced_media(storage, previous=previous, new_key=object_key, owner_id=trainer_user_id)
             return ExerciseVideoUploadResponse(
                 trainer_user_id=trainer_user_id,
                 row_id=row_id,
-                video_url=video_url,
+                video_url=self._signed_media_url(object_key),
             )
         except MediaValidationError as exc:
             self._error_translator.raise_http_error(ValidationError(str(exc)))
@@ -383,16 +387,11 @@ class PlanHttpHandler:
         row_id: str,
     ) -> None:
         try:
-            self._require_self_trainer(authorization, trainer_user_id)
+            self._require_trainer_owner(authorization, trainer_user_id)
             storage = self._runtime.video_storage
             with self._runtime.plan_service_scope() as plan_service:
-                _, previous_video_url = plan_service.clear_trainer_exercise_video_url(trainer_user_id, row_id)
-            object_key = self._extract_object_key(previous_video_url)
-            if object_key and storage is not None:
-                try:
-                    await storage.delete_media(object_key)
-                except PlanError:
-                    pass
+                _, previous = plan_service.clear_trainer_exercise_video_url(trainer_user_id, row_id)
+            await self._release_replaced_media(storage, previous=previous, new_key=None, owner_id=trainer_user_id)
             return
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
@@ -409,11 +408,12 @@ class PlanHttpHandler:
         data: bytes,
     ) -> ExercisePhotoUploadResponse:
         try:
-            self._require_self_trainer(authorization, trainer_user_id)
+            self._require_trainer_owner(authorization, trainer_user_id)
             photo_position = self._normalize_photo_position(position)
-            storage = self._runtime.video_storage
-            if storage is None:
-                raise IntegrationError("s3 media storage is not configured")
+            with self._runtime.plan_service_scope() as plan_service:
+                plan_service.get_trainer_exercise(trainer_user_id, row_id)
+            storage = self._require_storage()
+            validate_photo_bytes(filename, data, max_bytes=self._runtime.settings.s3_max_photo_bytes)
             object_key = await storage.upload_photo(
                 owner_id=trainer_user_id,
                 row_id=row_id,
@@ -421,25 +421,23 @@ class PlanHttpHandler:
                 data=data,
                 position=photo_position,
             )
-            image_url = f"{_MEDIA_PREFIX}{quote(object_key, safe='/')}"
-            with self._runtime.plan_service_scope() as plan_service:
-                _, previous_image_url = plan_service.set_trainer_exercise_photo_url(
-                    trainer_user_id,
-                    row_id,
-                    photo_position,
-                    image_url,
-                )
-            previous_object_key = self._extract_object_key(previous_image_url)
-            if previous_object_key and previous_object_key != object_key:
-                try:
-                    await storage.delete_media(previous_object_key)
-                except PlanError:
-                    pass
+            try:
+                with self._runtime.plan_service_scope() as plan_service:
+                    _, previous = plan_service.set_trainer_exercise_photo_url(
+                        trainer_user_id,
+                        row_id,
+                        photo_position,
+                        object_key,
+                    )
+            except Exception:
+                await self._delete_uploaded_object(storage, object_key)
+                raise
+            await self._release_replaced_media(storage, previous=previous, new_key=object_key, owner_id=trainer_user_id)
             return ExercisePhotoUploadResponse(
                 trainer_user_id=trainer_user_id,
                 row_id=row_id,
-                position=photo_position,
-                image_url=image_url,
+                position=photo_position,  # type: ignore[arg-type]
+                image_url=self._signed_media_url(object_key),
             )
         except MediaValidationError as exc:
             self._error_translator.raise_http_error(ValidationError(str(exc)))
@@ -456,40 +454,51 @@ class PlanHttpHandler:
         position: str,
     ) -> None:
         try:
-            self._require_self_trainer(authorization, trainer_user_id)
+            self._require_trainer_owner(authorization, trainer_user_id)
             photo_position = self._normalize_photo_position(position)
             storage = self._runtime.video_storage
             with self._runtime.plan_service_scope() as plan_service:
-                _, previous_image_url = plan_service.clear_trainer_exercise_photo_url(
+                _, previous = plan_service.clear_trainer_exercise_photo_url(
                     trainer_user_id,
                     row_id,
                     photo_position,
                 )
-            object_key = self._extract_object_key(previous_image_url)
-            if object_key and storage is not None:
-                try:
-                    await storage.delete_media(object_key)
-                except PlanError:
-                    pass
+            await self._release_replaced_media(storage, previous=previous, new_key=None, owner_id=trainer_user_id)
             return
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
-    async def get_media(self, object_key: str) -> Response:
-        if not self._is_allowed_media_key(object_key):
+    async def get_media(
+        self,
+        object_key: str,
+        *,
+        expires: str | None,
+        signature: str | None,
+        if_none_match: str | None = None,
+    ) -> Response:
+        normalized = normalize_stored_media(object_key) or ""
+        if not self._is_allowed_media_key(normalized):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="media key is not allowed")
-        storage = self._runtime.video_storage
-        if storage is None:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="s3 media storage is not configured")
         try:
-            data, content_type = await storage.download_media(object_key)
-            return Response(content=data, media_type=content_type)
+            expires_at = self._signer().verify(normalized, expires, signature)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
-        except Exception as exc:  # pragma: no cover
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="media not found") from exc
-        raise AssertionError("unreachable")
+        storage = self._runtime.video_storage
+        if storage is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="s3 media storage is not configured",
+            )
+        try:
+            opened = await self._open_stored_media(storage, normalized)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        headers = self._media_response_headers(opened, expires_at=expires_at)
+        if etag_matches(if_none_match, opened.etag):
+            opened.close()
+            return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+        return StreamingResponse(opened.iterator, media_type=opened.content_type, headers=headers)
 
     def admin_list_exercises(
         self,
@@ -510,7 +519,7 @@ class PlanHttpHandler:
                     page_size=page_size,
                 )
                 return AdminExerciseListResponse(
-                    items=[TrainerExerciseResponse.model_validate(item, from_attributes=True) for item in items],
+                    items=[self._trainer_exercise_response(item) for item in items],
                     total=total,
                     page=page,
                     page_size=page_size,
@@ -538,7 +547,7 @@ class PlanHttpHandler:
                     )
                 )
                 return AdminPlatformExerciseListResponse(
-                    items=[self._response_factory.from_domain_platform_exercise(item) for item in items],
+                    items=[self._platform_exercise_response(item) for item in items],
                     total=total,
                     page=page,
                     page_size=page_size,
@@ -559,7 +568,7 @@ class PlanHttpHandler:
                 item = plan_service.add_platform_exercise(
                     self._request_factory.to_add_platform_exercise_command(payload)
                 )
-                return self._response_factory.from_domain_platform_exercise(item)
+                return self._platform_exercise_response(item)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
@@ -574,7 +583,7 @@ class PlanHttpHandler:
             self._require_platform_admin(authorization)
             with self._runtime.plan_service_scope() as plan_service:
                 item = plan_service.get_platform_exercise(row_id)
-                return self._response_factory.from_domain_platform_exercise(item)
+                return self._platform_exercise_response(item)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
@@ -592,19 +601,20 @@ class PlanHttpHandler:
                 item = plan_service.update_platform_exercise(
                     self._request_factory.to_update_platform_exercise_command(row_id, payload)
                 )
-                return self._response_factory.from_domain_platform_exercise(item)
+                return self._platform_exercise_response(item)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
-    def admin_archive_platform_exercise(self, *, authorization: str | None, row_id: str) -> None:
+    async def admin_archive_platform_exercise(self, *, authorization: str | None, row_id: str) -> None:
         try:
             self._require_platform_admin(authorization)
             with self._runtime.plan_service_scope() as plan_service:
-                plan_service.archive_platform_exercise(
+                keys = plan_service.archive_platform_exercise(
                     self._request_factory.to_archive_platform_exercise_command(row_id)
                 )
-                return
+            await self._release_media_keys(keys, owner_id=PLATFORM_MEDIA_OWNER)
+            return
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
@@ -619,25 +629,23 @@ class PlanHttpHandler:
     ) -> PlatformExerciseVideoUploadResponse:
         try:
             self._require_platform_admin(authorization)
-            storage = self._runtime.video_storage
-            if storage is None:
-                raise IntegrationError("s3 media storage is not configured")
-            object_key = await storage.upload_video(
-                owner_id="platform",
-                row_id=row_id,
-                filename=filename,
-                data=data,
-            )
-            video_url = f"{_MEDIA_PREFIX}{quote(object_key, safe='/')}"
             with self._runtime.plan_service_scope() as plan_service:
-                _, previous_video_url = plan_service.set_platform_exercise_video_url(row_id, video_url)
-            previous_object_key = self._extract_object_key(previous_video_url)
-            if previous_object_key and previous_object_key != object_key:
-                try:
-                    await storage.delete_media(previous_object_key)
-                except PlanError:
-                    pass
-            return PlatformExerciseVideoUploadResponse(row_id=row_id, video_url=video_url)
+                plan_service.get_platform_exercise(row_id)
+            storage = self._require_storage()
+            object_key = await storage.upload_video(owner_id=PLATFORM_MEDIA_OWNER, row_id=row_id, filename=filename, data=data)
+            try:
+                with self._runtime.plan_service_scope() as plan_service:
+                    _, previous = plan_service.set_platform_exercise_video_url(row_id, object_key)
+            except Exception:
+                await self._delete_uploaded_object(storage, object_key)
+                raise
+            await self._release_replaced_media(
+                storage,
+                previous=previous,
+                new_key=object_key,
+                owner_id=PLATFORM_MEDIA_OWNER,
+            )
+            return PlatformExerciseVideoUploadResponse(row_id=row_id, video_url=self._signed_media_url(object_key))
         except MediaValidationError as exc:
             self._error_translator.raise_http_error(ValidationError(str(exc)))
         except PlanError as exc:
@@ -649,13 +657,8 @@ class PlanHttpHandler:
             self._require_platform_admin(authorization)
             storage = self._runtime.video_storage
             with self._runtime.plan_service_scope() as plan_service:
-                _, previous_video_url = plan_service.clear_platform_exercise_video_url(row_id)
-            object_key = self._extract_object_key(previous_video_url)
-            if object_key and storage is not None:
-                try:
-                    await storage.delete_media(object_key)
-                except PlanError:
-                    pass
+                _, previous = plan_service.clear_platform_exercise_video_url(row_id)
+            await self._release_replaced_media(storage, previous=previous, new_key=None, owner_id=PLATFORM_MEDIA_OWNER)
             return
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
@@ -673,33 +676,33 @@ class PlanHttpHandler:
         try:
             self._require_platform_admin(authorization)
             photo_position = self._normalize_photo_position(position)
-            storage = self._runtime.video_storage
-            if storage is None:
-                raise IntegrationError("s3 media storage is not configured")
+            with self._runtime.plan_service_scope() as plan_service:
+                plan_service.get_platform_exercise(row_id)
+            storage = self._require_storage()
+            validate_photo_bytes(filename, data, max_bytes=self._runtime.settings.s3_max_photo_bytes)
             object_key = await storage.upload_photo(
-                owner_id="platform",
+                owner_id=PLATFORM_MEDIA_OWNER,
                 row_id=row_id,
                 filename=filename,
                 data=data,
                 position=photo_position,
             )
-            image_url = f"{_MEDIA_PREFIX}{quote(object_key, safe='/')}"
-            with self._runtime.plan_service_scope() as plan_service:
-                _, previous_image_url = plan_service.set_platform_exercise_photo_url(
-                    row_id,
-                    photo_position,
-                    image_url,
-                )
-            previous_object_key = self._extract_object_key(previous_image_url)
-            if previous_object_key and previous_object_key != object_key:
-                try:
-                    await storage.delete_media(previous_object_key)
-                except PlanError:
-                    pass
+            try:
+                with self._runtime.plan_service_scope() as plan_service:
+                    _, previous = plan_service.set_platform_exercise_photo_url(row_id, photo_position, object_key)
+            except Exception:
+                await self._delete_uploaded_object(storage, object_key)
+                raise
+            await self._release_replaced_media(
+                storage,
+                previous=previous,
+                new_key=object_key,
+                owner_id=PLATFORM_MEDIA_OWNER,
+            )
             return PlatformExercisePhotoUploadResponse(
                 row_id=row_id,
-                position=photo_position,
-                image_url=image_url,
+                position=photo_position,  # type: ignore[arg-type]
+                image_url=self._signed_media_url(object_key),
             )
         except MediaValidationError as exc:
             self._error_translator.raise_http_error(ValidationError(str(exc)))
@@ -719,26 +722,18 @@ class PlanHttpHandler:
             photo_position = self._normalize_photo_position(position)
             storage = self._runtime.video_storage
             with self._runtime.plan_service_scope() as plan_service:
-                _, previous_image_url = plan_service.clear_platform_exercise_photo_url(row_id, photo_position)
-            object_key = self._extract_object_key(previous_image_url)
-            if object_key and storage is not None:
-                try:
-                    await storage.delete_media(object_key)
-                except PlanError:
-                    pass
+                _, previous = plan_service.clear_platform_exercise_photo_url(row_id, photo_position)
+            await self._release_replaced_media(storage, previous=previous, new_key=None, owner_id=PLATFORM_MEDIA_OWNER)
             return
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
-    def admin_archive_exercise(self, *, authorization: str | None, trainer_user_id: str, row_id: str) -> None:
+    async def admin_archive_exercise(self, *, authorization: str | None, trainer_user_id: str, row_id: str) -> None:
         try:
             self._require_platform_admin(authorization)
-            with self._runtime.plan_service_scope() as plan_service:
-                plan_service.archive_trainer_exercise(
-                    self._request_factory.to_archive_trainer_exercise_command(trainer_user_id, row_id)
-                )
-                return
+            await self._archive_trainer_and_release_media(trainer_user_id, row_id)
+            return
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
@@ -859,6 +854,13 @@ class PlanHttpHandler:
             raise ForbiddenError("not allowed to access another trainer's resources")
         return user
 
+    def _require_trainer_owner(self, authorization: str | None, trainer_user_id: str) -> AuthUser:
+        # Загрузка медиа: совпадение id и роль тренера. Чужое упражнение отсекается выборкой по паре.
+        user = self._require_self_trainer(authorization, trainer_user_id)
+        if user.role != "trainer":
+            raise ForbiddenError("trainer role required")
+        return user
+
     def _require_can_access_client_plan(self, authorization: str | None, client_user_id: str) -> AuthUser:
         user = self._require_current_user(authorization)
         if user.user_id == client_user_id:
@@ -915,19 +917,135 @@ class PlanHttpHandler:
             raise ValidationError("invalid photo position (allowed: start, end)")
         return normalized
 
-    @staticmethod
-    def _extract_object_key(media_url: str | None) -> str | None:
-        if not media_url:
-            return None
-        if media_url.startswith(_MEDIA_PREFIX):
-            return unquote(media_url[len(_MEDIA_PREFIX) :])
-        if media_url.startswith("videos/") or media_url.startswith("photos/"):
-            return media_url
-        return None
+    def max_photo_bytes(self) -> int:
+        return self._runtime.settings.s3_max_photo_bytes
 
-    @staticmethod
-    def _is_allowed_media_key(object_key: str) -> bool:
-        normalized = object_key.replace("\\", "/").lstrip("/")
-        if not normalized or any(part == ".." for part in normalized.split("/")):
-            return False
-        return normalized.startswith("videos/") or normalized.startswith("photos/")
+    def max_video_bytes(self) -> int:
+        return self._runtime.settings.s3_max_video_bytes
+
+    def _media_prefixes(self) -> tuple[str, str]:
+        storage = self._runtime.video_storage
+        photos_prefix = getattr(storage, "photos_prefix", None) if storage is not None else None
+        videos_prefix = getattr(storage, "videos_prefix", None) if storage is not None else None
+        if photos_prefix and videos_prefix:
+            return photos_prefix, videos_prefix
+        settings = self._runtime.settings
+        return settings.s3_photos_prefix, settings.s3_videos_prefix
+
+    def _signer(self) -> MediaUrlSigner:
+        photos_prefix, videos_prefix = self._media_prefixes()
+        settings = self._runtime.settings
+        return MediaUrlSigner(
+            settings.media_url_signing_secret,
+            settings.media_url_ttl_seconds,
+            photos_prefix=photos_prefix,
+            videos_prefix=videos_prefix,
+        )
+
+    def _signed_media_url(self, object_key: str) -> str:
+        signed = self._signer().sign(object_key)
+        if signed is None:
+            raise IntegrationError("media url signing is not configured")
+        return signed
+
+    def _trainer_exercise_response(self, item: TrainerExercise) -> TrainerExerciseResponse:
+        response = TrainerExerciseResponse.model_validate(item, from_attributes=True)
+        return response.model_copy(
+            update={
+                "video_url": self._signer().sign(item.video_url),
+                "start_image_url": self._signer().sign(item.start_image_url),
+                "end_image_url": self._signer().sign(item.end_image_url),
+            }
+        )
+
+    def _platform_exercise_response(self, item: PlatformExercise) -> PlatformExerciseResponse:
+        response = self._response_factory.from_domain_platform_exercise(item)
+        return response.model_copy(
+            update={
+                "video_url": self._signer().sign(item.video_url),
+                "start_image_url": self._signer().sign(item.start_image_url),
+                "end_image_url": self._signer().sign(item.end_image_url),
+            }
+        )
+
+    def _require_storage(self):
+        storage = self._runtime.video_storage
+        if storage is None:
+            raise IntegrationError("s3 media storage is not configured")
+        return storage
+
+    def _is_allowed_media_key(self, object_key: str) -> bool:
+        photos_prefix, videos_prefix = self._media_prefixes()
+        return is_safe_object_key(object_key) and is_internal_media_key(
+            object_key,
+            photos_prefix=photos_prefix,
+            videos_prefix=videos_prefix,
+        )
+
+    async def _archive_trainer_and_release_media(self, trainer_user_id: str, row_id: str) -> None:
+        with self._runtime.plan_service_scope() as plan_service:
+            keys = plan_service.archive_trainer_exercise(
+                self._request_factory.to_archive_trainer_exercise_command(trainer_user_id, row_id)
+            )
+        await self._release_media_keys(keys, owner_id=trainer_user_id)
+
+    async def _release_media_keys(self, keys: list[str], *, owner_id: str) -> None:
+        storage = self._runtime.video_storage
+        for key in keys:
+            await self._release_replaced_media(storage, previous=key, new_key=None, owner_id=owner_id)
+
+    async def _release_replaced_media(self, storage, *, previous: str | None, new_key: str | None, owner_id: str) -> None:
+        previous_key = normalize_stored_media(previous)
+        current_key = normalize_stored_media(new_key)
+        if not previous_key or previous_key == current_key:
+            return
+        await self._release_owned_media(storage, previous_key, owner_id)
+
+    async def _release_owned_media(self, storage, object_key: str, owner_id: str) -> None:
+        # Чужой префикс и всё ещё используемый ключ не удаляем: клоны держат стабильный объект.
+        photos_prefix, videos_prefix = self._media_prefixes()
+        if not media_key_owned_by(object_key, owner_id, photos_prefix=photos_prefix, videos_prefix=videos_prefix):
+            logger.warning("refusing to delete media outside owner prefix owner=%s key=%s", owner_id, object_key)
+            return
+        with self._runtime.plan_service_scope() as plan_service:
+            if plan_service.media_key_reference_count(object_key) > 0:
+                logger.info("keeping media object still referenced by another exercise key=%s", object_key)
+                return
+        if storage is None:
+            logger.warning("media storage is not configured; skipped delete key=%s", object_key)
+            return
+        try:
+            await storage.delete_media(object_key)
+        except Exception:
+            logger.exception("failed to delete media object key=%s", object_key)
+
+    async def _delete_uploaded_object(self, storage, object_key: str) -> None:
+        try:
+            await storage.delete_media(object_key)
+        except Exception:
+            logger.exception("failed to delete uploaded media after database error key=%s", object_key)
+
+    async def _open_stored_media(self, storage, object_key: str) -> OpenedMedia:
+        opener = getattr(storage, "open_media", None)
+        if callable(opener):
+            return await opener(object_key)
+        data, content_type = await storage.download_media(object_key)
+        digest = hashlib.sha256(data).hexdigest()
+        return OpenedMedia(
+            content_type=content_type,
+            etag=f'"{digest}"',
+            content_length=len(data),
+            iterator=iter([data]),
+        )
+
+    def _media_response_headers(self, opened: OpenedMedia, *, expires_at: int) -> dict[str, str]:
+        remaining = max(0, expires_at - int(time.time()))
+        headers = {
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": f"private, max-age={remaining}",
+        }
+        if opened.etag:
+            headers["ETag"] = opened.etag
+        if opened.content_length is not None:
+            headers["Content-Length"] = str(opened.content_length)
+        return headers

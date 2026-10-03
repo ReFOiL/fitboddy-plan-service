@@ -4,11 +4,14 @@ from application.errors import (
     ConflictError,
     ForbiddenError,
     IntegrationError,
+    MediaNotFoundError,
+    PayloadTooLargeError,
     PlanError,
     PlanNotFoundError,
     PlatformExerciseNotFoundError,
     TrainerExerciseNotFoundError,
     UnauthorizedError,
+    UnsupportedMediaTypeError,
     ValidationError,
 )
 
@@ -32,4 +35,10 @@ class ErrorTranslator:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
         if isinstance(exc, IntegrationError):
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        if isinstance(exc, PayloadTooLargeError):
+            raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)) from exc
+        if isinstance(exc, UnsupportedMediaTypeError):
+            raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)) from exc
+        if isinstance(exc, MediaNotFoundError):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

@@ -32,3 +32,15 @@ class ConflictError(PlanError):
 
 class IntegrationError(PlanError):
     pass
+
+
+class PayloadTooLargeError(PlanError):
+    pass
+
+
+class UnsupportedMediaTypeError(PlanError):
+    pass
+
+
+class MediaNotFoundError(PlanError):
+    pass

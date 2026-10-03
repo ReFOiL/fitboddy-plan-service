@@ -21,3 +21,8 @@ class Settings(BaseSettings):
     s3_secure: bool = Field(default=False, alias="S3_SECURE")
     s3_videos_prefix: str = Field(default="videos/", alias="S3_VIDEOS_PREFIX")
     s3_photos_prefix: str = Field(default="photos/", alias="S3_PHOTOS_PREFIX")
+    s3_max_video_bytes: int = Field(default=200 * 1024 * 1024, alias="S3_MAX_VIDEO_BYTES")
+    s3_max_photo_bytes: int = Field(default=15 * 1024 * 1024, alias="S3_MAX_PHOTO_BYTES")
+    # HMAC для подписанных URL. Пустой секрет запрещает отдачу. Инфра задаёт MEDIA_URL_TTL_SECONDS (пример: 300).
+    media_url_signing_secret: str = Field(default="", alias="MEDIA_URL_SIGNING_SECRET")
+    media_url_ttl_seconds: int = Field(default=300, alias="MEDIA_URL_TTL_SECONDS")

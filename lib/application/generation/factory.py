@@ -8,10 +8,14 @@ from application.generation.providers import (
     SourceAwareCatalogProvider,
     TrainerCatalogProvider,
 )
+from application.media_storage import S3MediaStorage
 from application.repositories import PlatformExerciseRepository, TrainerExerciseRepository
 
 
-def build_default_generation_orchestrator(session: Session) -> GenerationOrchestrator:
+def build_default_generation_orchestrator(
+    session: Session,
+    media_storage: S3MediaStorage | None = None,
+) -> GenerationOrchestrator:
     bootstrap_provider = SeedCatalogProvider()
     platform_repo = PlatformExerciseRepository(session)
     trainer_repo = TrainerExerciseRepository(session)
@@ -20,6 +24,7 @@ def build_default_generation_orchestrator(session: Session) -> GenerationOrchest
             trainer_repo=trainer_repo,
             platform_repo=platform_repo,
             bootstrap_provider=bootstrap_provider,
+            media_storage=media_storage,
         ),
         platform_provider=PlatformCatalogProvider(
             platform_repo=platform_repo,

@@ -1,5 +1,7 @@
 from fastapi import APIRouter, File, Header, Query, Request, Response, UploadFile, status
 
+from presentation.http.upload_limits import read_upload_limited
+
 from presentation.http.schemas import (
     AdminExerciseListResponse,
     AdminPlatformExerciseListResponse,
@@ -132,14 +134,14 @@ class AdminRoutes:
             page_size=page_size,
         )
 
-    def archive_exercise(
+    async def archive_exercise(
         self,
         trainer_user_id: str,
         row_id: str,
         request: Request,
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> Response:
-        request.app.state.plan_handler.admin_archive_exercise(
+        await request.app.state.plan_handler.admin_archive_exercise(
             authorization=authorization,
             trainer_user_id=trainer_user_id,
             row_id=row_id,
@@ -210,13 +212,13 @@ class AdminRoutes:
             payload=payload,
         )
 
-    def archive_platform_exercise(
+    async def archive_platform_exercise(
         self,
         row_id: str,
         request: Request,
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> Response:
-        request.app.state.plan_handler.admin_archive_platform_exercise(
+        await request.app.state.plan_handler.admin_archive_platform_exercise(
             authorization=authorization,
             row_id=row_id,
         )
@@ -229,7 +231,7 @@ class AdminRoutes:
         authorization: str | None = Header(default=None, alias="Authorization"),
         file: UploadFile = File(...),
     ) -> PlatformExerciseVideoUploadResponse:
-        data = await file.read()
+        data = await read_upload_limited(file, request.app.state.plan_handler.max_video_bytes())
         return await request.app.state.plan_handler.admin_upload_platform_exercise_video(
             authorization=authorization,
             row_id=row_id,
@@ -257,7 +259,7 @@ class AdminRoutes:
         authorization: str | None = Header(default=None, alias="Authorization"),
         file: UploadFile = File(...),
     ) -> PlatformExercisePhotoUploadResponse:
-        data = await file.read()
+        data = await read_upload_limited(file, request.app.state.plan_handler.max_photo_bytes())
         return await request.app.state.plan_handler.admin_upload_platform_exercise_photo(
             authorization=authorization,
             row_id=row_id,
