@@ -1,5 +1,7 @@
 from fastapi import APIRouter, File, Header, Query, Request, Response, UploadFile, status
 
+from presentation.http.upload_limits import read_upload_limited
+
 from presentation.http.schemas import (
     ClientExerciseLoadResponse,
     ExercisePhotoUploadResponse,
@@ -323,13 +325,13 @@ class PlanRoutes:
         )
 
     @staticmethod
-    def archive_trainer_exercise(
+    async def archive_trainer_exercise(
         request: Request,
         trainer_user_id: str,
         row_id: str,
         authorization: str | None = Header(default=None),
     ) -> Response:
-        request.app.state.plan_handler.archive_trainer_exercise(
+        await request.app.state.plan_handler.archive_trainer_exercise(
             authorization=authorization,
             trainer_user_id=trainer_user_id,
             row_id=row_id,
@@ -358,7 +360,7 @@ class PlanRoutes:
         file: UploadFile = File(...),
         authorization: str | None = Header(default=None),
     ) -> ExerciseVideoUploadResponse:
-        data = await file.read()
+        data = await read_upload_limited(file, request.app.state.plan_handler.max_video_bytes())
         return await request.app.state.plan_handler.upload_trainer_exercise_video(
             authorization=authorization,
             trainer_user_id=trainer_user_id,
@@ -390,7 +392,7 @@ class PlanRoutes:
         file: UploadFile = File(...),
         authorization: str | None = Header(default=None),
     ) -> ExercisePhotoUploadResponse:
-        data = await file.read()
+        data = await read_upload_limited(file, request.app.state.plan_handler.max_photo_bytes())
         return await request.app.state.plan_handler.upload_trainer_exercise_photo(
             authorization=authorization,
             trainer_user_id=trainer_user_id,
@@ -417,8 +419,19 @@ class PlanRoutes:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @staticmethod
-    async def get_media(request: Request, object_key: str):
-        return await request.app.state.plan_handler.get_media(object_key)
+    async def get_media(
+        request: Request,
+        object_key: str,
+        expires: str | None = Query(default=None),
+        signature: str | None = Query(default=None),
+        if_none_match: str | None = Header(default=None, alias="If-None-Match"),
+    ):
+        return await request.app.state.plan_handler.get_media(
+            object_key,
+            expires=expires,
+            signature=signature,
+            if_none_match=if_none_match,
+        )
 
     @staticmethod
     def list_client_loads(

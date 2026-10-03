@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from uuid import uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from application.media_keys import normalize_stored_media
 from application.models import PlatformExerciseModel, TrainerExerciseModel
 from application.repositories.exercise_muscles import ExerciseMuscleRepository
+
+# (исходное значение, row_id клона, слот video|start|end) -> значение для БД
+MediaCopier = Callable[[str | None, str, str], str | None]
 
 
 class TrainerExerciseRepository:
@@ -56,6 +61,16 @@ class TrainerExerciseRepository:
         )
         return self._session.scalar(statement)
 
+    def lock_for_media_update(self, trainer_user_id: str, row_id: str) -> TrainerExerciseModel | None:
+        # Блокируем строку на время смены ключа, чтобы параллельные загрузки не теряли объект.
+        statement = select(TrainerExerciseModel).where(
+            TrainerExerciseModel.trainer_user_id == trainer_user_id,
+            TrainerExerciseModel.row_id == row_id,
+        )
+        if self._session.get_bind().dialect.name == "postgresql":
+            statement = statement.with_for_update()
+        return self._session.scalar(statement)
+
     def add(self, model: TrainerExerciseModel) -> TrainerExerciseModel:
         self._session.add(model)
         self._session.flush()
@@ -65,11 +80,22 @@ class TrainerExerciseRepository:
         self,
         trainer_user_id: str,
         platform_rows: list[PlatformExerciseModel],
+        copy_media: MediaCopier | None = None,
     ) -> list[TrainerExerciseModel]:
-        """Clone platform base catalog into a trainer's personal catalog (once)."""
+        """Клонировать базовый каталог платформы в каталог тренера (один раз).
+
+        Медиа копируется в префикс тренера, если передан ``copy_media``.
+        Иначе в строку попадает нормализованный ключ исходного объекта.
+        """
         existing = self.list_by_trainer(trainer_user_id, include_archived=True)
         if existing:
             return self.list_by_trainer(trainer_user_id)
+
+        def _stored(value: str | None, row_id: str, slot: str) -> str | None:
+            if copy_media is not None:
+                return copy_media(value, row_id, slot)
+            return normalize_stored_media(value)
+
         for item in platform_rows:
             trainer_row_id = str(uuid4())
             self._session.add(
@@ -90,9 +116,9 @@ class TrainerExerciseRepository:
                     default_weight_kg=item.default_weight_kg,
                     load_scheme=item.load_scheme or "flat",
                     scheme_steps_json=item.scheme_steps_json,
-                    video_url=item.video_url,
-                    start_image_url=item.start_image_url,
-                    end_image_url=item.end_image_url,
+                    video_url=_stored(item.video_url, trainer_row_id, "video"),
+                    start_image_url=_stored(item.start_image_url, trainer_row_id, "start"),
+                    end_image_url=_stored(item.end_image_url, trainer_row_id, "end"),
                     is_active=True,
                 )
             )

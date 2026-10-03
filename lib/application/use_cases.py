@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -38,6 +40,8 @@ from application.errors import (
     TrainerExerciseNotFoundError,
     ValidationError,
 )
+from application.media_keys import media_key_variants, normalize_stored_media
+from application.media_storage import S3MediaStorage, copy_or_share
 from application.models import (
     PlanDayModel,
     PlanExerciseModel,
@@ -77,6 +81,7 @@ from domain.equipment import (
 from domain.value_objects import TrainingGoal, TrainingLevel, WorkoutLocation
 
 _ALLOWED_LOAD_SCHEMES = {"flat", "ascending", "descending", "custom"}
+logger = logging.getLogger(__name__)
 
 
 class PlanService:
@@ -89,6 +94,7 @@ class PlanService:
         generation_orchestrator: GenerationOrchestrator,
         profile_gateway: ProfileGateway,
         require_profile_completion: bool,
+        media_storage: S3MediaStorage | None = None,
     ) -> None:
         self._session = session
         self._plans = TrainingPlanRepository(session)
@@ -104,6 +110,7 @@ class PlanService:
         self._generation_orchestrator = generation_orchestrator
         self._profile_gateway = profile_gateway
         self._require_profile_completion = require_profile_completion
+        self._media_storage = media_storage
 
     def list_muscles(self) -> list[Muscle]:
         return self._exercise_muscles.list_muscles()
@@ -787,14 +794,15 @@ class PlanService:
             raise TrainerExerciseNotFoundError("trainer exercise not found")
         return self._mapper.trainer_exercise_to_domain(model)
 
-    def archive_trainer_exercise(self, command: ArchiveTrainerExerciseCommand) -> None:
+    def archive_trainer_exercise(self, command: ArchiveTrainerExerciseCommand) -> list[str]:
         model = self._trainer_exercises.find_by_trainer_and_row_id(command.trainer_user_id, command.row_id)
         if model is None:
             raise TrainerExerciseNotFoundError("trainer exercise not found")
-        if not model.is_active:
-            return
+        # Архив отпускает медиа: восстановление упражнения файлы не возвращает.
+        detached = _detach_media_keys(model)
         model.is_active = False
         self._session.commit()
+        return detached
 
     def restore_trainer_exercise(self, command: RestoreTrainerExerciseCommand) -> None:
         model = self._trainer_exercises.find_by_trainer_and_row_id(command.trainer_user_id, command.row_id)
@@ -947,14 +955,14 @@ class PlanService:
         self._session.refresh(model)
         return self._mapper.platform_exercise_to_domain(model)
 
-    def archive_platform_exercise(self, command: ArchivePlatformExerciseCommand) -> None:
+    def archive_platform_exercise(self, command: ArchivePlatformExerciseCommand) -> list[str]:
         model = self._platform_exercises.find_by_row_id(command.row_id)
         if model is None:
             raise PlatformExerciseNotFoundError("platform exercise not found")
-        if not model.is_active:
-            return
+        detached = _detach_media_keys(model)
         model.is_active = False
         self._session.commit()
+        return detached
 
     def admin_list_exercises(
         self,
@@ -989,7 +997,7 @@ class PlanService:
         row_id: str,
         video_url: str,
     ) -> tuple[TrainerExercise, str | None]:
-        model = self._trainer_exercises.find_by_trainer_and_row_id(trainer_user_id, row_id)
+        model = self._trainer_exercises.lock_for_media_update(trainer_user_id, row_id)
         if model is None:
             raise TrainerExerciseNotFoundError("trainer exercise not found")
         previous_video_url = model.video_url
@@ -999,7 +1007,7 @@ class PlanService:
         return self._mapper.trainer_exercise_to_domain(model), previous_video_url
 
     def clear_trainer_exercise_video_url(self, trainer_user_id: str, row_id: str) -> tuple[TrainerExercise, str | None]:
-        model = self._trainer_exercises.find_by_trainer_and_row_id(trainer_user_id, row_id)
+        model = self._trainer_exercises.lock_for_media_update(trainer_user_id, row_id)
         if model is None:
             raise TrainerExerciseNotFoundError("trainer exercise not found")
         previous_video_url = model.video_url
@@ -1009,7 +1017,7 @@ class PlanService:
         return self._mapper.trainer_exercise_to_domain(model), previous_video_url
 
     def set_platform_exercise_video_url(self, row_id: str, video_url: str) -> tuple[PlatformExercise, str | None]:
-        model = self._platform_exercises.find_by_row_id(row_id)
+        model = self._platform_exercises.lock_for_media_update(row_id)
         if model is None:
             raise PlatformExerciseNotFoundError("platform exercise not found")
         previous_video_url = model.video_url
@@ -1019,7 +1027,7 @@ class PlanService:
         return self._mapper.platform_exercise_to_domain(model), previous_video_url
 
     def clear_platform_exercise_video_url(self, row_id: str) -> tuple[PlatformExercise, str | None]:
-        model = self._platform_exercises.find_by_row_id(row_id)
+        model = self._platform_exercises.lock_for_media_update(row_id)
         if model is None:
             raise PlatformExerciseNotFoundError("platform exercise not found")
         previous_video_url = model.video_url
@@ -1035,7 +1043,7 @@ class PlanService:
         position: str,
         image_url: str,
     ) -> tuple[TrainerExercise, str | None]:
-        model = self._trainer_exercises.find_by_trainer_and_row_id(trainer_user_id, row_id)
+        model = self._trainer_exercises.lock_for_media_update(trainer_user_id, row_id)
         if model is None:
             raise TrainerExerciseNotFoundError("trainer exercise not found")
         field = self._photo_url_field(position)
@@ -1051,7 +1059,7 @@ class PlanService:
         row_id: str,
         position: str,
     ) -> tuple[TrainerExercise, str | None]:
-        model = self._trainer_exercises.find_by_trainer_and_row_id(trainer_user_id, row_id)
+        model = self._trainer_exercises.lock_for_media_update(trainer_user_id, row_id)
         if model is None:
             raise TrainerExerciseNotFoundError("trainer exercise not found")
         field = self._photo_url_field(position)
@@ -1067,7 +1075,7 @@ class PlanService:
         position: str,
         image_url: str,
     ) -> tuple[PlatformExercise, str | None]:
-        model = self._platform_exercises.find_by_row_id(row_id)
+        model = self._platform_exercises.lock_for_media_update(row_id)
         if model is None:
             raise PlatformExerciseNotFoundError("platform exercise not found")
         field = self._photo_url_field(position)
@@ -1082,7 +1090,7 @@ class PlanService:
         row_id: str,
         position: str,
     ) -> tuple[PlatformExercise, str | None]:
-        model = self._platform_exercises.find_by_row_id(row_id)
+        model = self._platform_exercises.lock_for_media_update(row_id)
         if model is None:
             raise PlatformExerciseNotFoundError("platform exercise not found")
         field = self._photo_url_field(position)
@@ -1091,6 +1099,21 @@ class PlanService:
         self._session.commit()
         self._session.refresh(model)
         return self._mapper.platform_exercise_to_domain(model), previous_image_url
+
+    def media_key_reference_count(self, object_key: str) -> int:
+        """Сколько строк упражнений всё ещё ссылаются на ключ (включая старый URL)."""
+        variants = media_key_variants(object_key)
+        if not variants:
+            return 0
+        total = 0
+        for model in (TrainerExerciseModel, PlatformExerciseModel):
+            predicate = or_(
+                model.video_url.in_(variants),
+                model.start_image_url.in_(variants),
+                model.end_image_url.in_(variants),
+            )
+            total += int(self._session.scalar(select(func.count()).select_from(model).where(predicate)) or 0)
+        return total
 
     @staticmethod
     def _photo_url_field(position: str) -> str:
@@ -1255,5 +1278,49 @@ class PlanService:
         if existing:
             return
         platform_rows = self._ensure_platform_catalog_baseline()
-        self._trainer_exercises.clone_from_platform(trainer_user_id, platform_rows)
-        self._session.commit()
+        copied: list[str] = []
+
+        def _copy(source: str | None, row_id: str, slot: str) -> str | None:
+            before = normalize_stored_media(source)
+            stored = copy_or_share(
+                self._media_storage,
+                source,
+                owner_id=trainer_user_id,
+                row_id=row_id,
+                slot=slot,
+            )
+            # Удалять при откате можно только новый объект, не общий ключ платформы.
+            if stored and before and stored != before:
+                copied.append(stored)
+            return stored
+
+        try:
+            self._trainer_exercises.clone_from_platform(trainer_user_id, platform_rows, copy_media=_copy)
+            self._session.commit()
+        except Exception:
+            self._session.rollback()
+            self._discard_copied_media(copied)
+            raise
+
+    def _discard_copied_media(self, keys: list[str]) -> None:
+        storage = self._media_storage
+        if storage is None:
+            return
+        for key in keys:
+            try:
+                storage.delete_media_sync(key)
+            except Exception:
+                logger.exception("failed to delete media copied during a rolled-back clone key=%s", key)
+
+
+def _detach_media_keys(model: TrainerExerciseModel | PlatformExerciseModel) -> list[str]:
+    raw_values = [model.video_url, model.start_image_url, model.end_image_url]
+    model.video_url = None
+    model.start_image_url = None
+    model.end_image_url = None
+    keys: list[str] = []
+    for value in raw_values:
+        key = normalize_stored_media(value)
+        if key:
+            keys.append(key)
+    return keys

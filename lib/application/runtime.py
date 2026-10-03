@@ -42,6 +42,10 @@ class PlanApplicationRuntime:
         return self._tenant_gateway
 
     @property
+    def settings(self) -> Settings:
+        return self._settings
+
+    @property
     def video_storage(self) -> S3MediaStorage | None:
         return self._video_storage
 
@@ -51,9 +55,13 @@ class PlanApplicationRuntime:
         try:
             yield PlanService(
                 session=session,
-                generation_orchestrator=build_default_generation_orchestrator(session),
+                generation_orchestrator=build_default_generation_orchestrator(
+                    session,
+                    media_storage=self._video_storage,
+                ),
                 profile_gateway=self._profile_gateway,
                 require_profile_completion=self._settings.require_profile_completion,
+                media_storage=self._video_storage,
             )
         finally:
             session.close()
@@ -73,6 +81,7 @@ class PlanApplicationRuntime:
             return None
         if not settings.s3_endpoint or not settings.s3_access_key or not settings.s3_secret_key:
             return None
+        # Клиент MinIO не ходит в бакет при старте: бакет и политика photos/* + videos/* задаёт инфраструктура.
         return S3MediaStorage(
             endpoint=settings.s3_endpoint,
             access_key=settings.s3_access_key,
@@ -81,4 +90,6 @@ class PlanApplicationRuntime:
             secure=settings.s3_secure,
             videos_prefix=settings.s3_videos_prefix,
             photos_prefix=settings.s3_photos_prefix,
+            max_video_size_bytes=settings.s3_max_video_bytes,
+            max_photo_size_bytes=settings.s3_max_photo_bytes,
         )

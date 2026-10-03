@@ -1,10 +1,28 @@
+import logging
+import time
 from datetime import date
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from application.errors import IntegrationError, MediaNotFoundError
 from application.gateways import AuthUser
+from application.media_storage import OpenedMedia
+from application.media_urls import MediaUrlSigner
+from application.models import TrainerExerciseModel
 from presentation.http.main import app
+
+_JPEG = b"\xff\xd8\xff\xe0" + b"jpeg-payload"
+_PNG = b"\x89PNG\r\n\x1a\n" + b"png-payload"
+_WEBP = b"RIFF\x18\x00\x00\x00WEBP" + b"webp-payload"
+
+
+def _signed_object_key(url: str) -> str:
+    assert "expires=" in url and "signature=" in url
+    path = url.split("?", 1)[0]
+    prefix = "/api/v1/trainers/media/"
+    assert path.startswith(prefix)
+    return path[len(prefix) :]
 
 _ACTIVE_RELATIONS: dict[str, str] = {}
 
@@ -389,13 +407,13 @@ def test_exercise_video_upload_and_delete_success() -> None:
         )
         assert uploaded.status_code == 200
         video_url = uploaded.json()["video_url"]
-        assert video_url == f"/api/v1/trainers/media/videos/trainer_video_2/{row_id}/fake.mp4"
+        assert _signed_object_key(video_url) == f"videos/trainer_video_2/{row_id}/fake.mp4"
         assert uploaded.json()["row_id"] == row_id
 
         listed = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id))
         assert listed.status_code == 200
         item = next(row for row in listed.json() if row["row_id"] == row_id)
-        assert item["video_url"] == video_url
+        assert _signed_object_key(item["video_url"]) == _signed_object_key(video_url)
 
         media = client.get(video_url)
         assert media.status_code == 200
@@ -483,41 +501,43 @@ def test_exercise_photo_upload_and_delete_success() -> None:
         start_uploaded = client.post(
             f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/start",
             headers=_catalog(trainer_user_id),
-            files={"file": ("start.jpg", b"fake-start-bytes", "image/jpeg")},
+            files={"file": ("start.jpg", _JPEG, "image/jpeg")},
         )
         assert start_uploaded.status_code == 200
         start_url = start_uploaded.json()["image_url"]
         assert start_uploaded.json()["position"] == "start"
-        assert start_url == f"/api/v1/trainers/media/photos/trainer_photo_2/{row_id}/start/fake1.jpg"
+        assert _signed_object_key(start_url) == f"photos/trainer_photo_2/{row_id}/start/fake1.jpg"
 
         end_uploaded = client.post(
             f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/end",
             headers=_catalog(trainer_user_id),
-            files={"file": ("end.png", b"fake-end-bytes", "image/png")},
+            files={"file": ("end.png", _PNG, "image/png")},
         )
         assert end_uploaded.status_code == 200
         end_url = end_uploaded.json()["image_url"]
         assert end_uploaded.json()["position"] == "end"
-        assert end_url == f"/api/v1/trainers/media/photos/trainer_photo_2/{row_id}/end/fake2.png"
+        assert _signed_object_key(end_url) == f"photos/trainer_photo_2/{row_id}/end/fake2.png"
 
         listed = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id))
         assert listed.status_code == 200
         item = next(row for row in listed.json() if row["row_id"] == row_id)
-        assert item["start_image_url"] == start_url
-        assert item["end_image_url"] == end_url
+        assert _signed_object_key(item["start_image_url"]) == _signed_object_key(start_url)
+        assert _signed_object_key(item["end_image_url"]) == _signed_object_key(end_url)
 
         media = client.get(start_url)
         assert media.status_code == 200
         assert media.content == b"photo-bytes"
         assert media.headers["content-type"].startswith("image/jpeg")
+        assert media.headers["x-content-type-options"] == "nosniff"
+        assert media.headers["cache-control"].startswith("private, max-age=")
 
         replaced = client.post(
             f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/start",
             headers=_catalog(trainer_user_id),
-            files={"file": ("start2.jpg", b"replacement-bytes", "image/jpeg")},
+            files={"file": ("start2.jpg", _JPEG, "image/jpeg")},
         )
         assert replaced.status_code == 200
-        assert replaced.json()["image_url"] == f"/api/v1/trainers/media/photos/trainer_photo_2/{row_id}/start/fake3.jpg"
+        assert _signed_object_key(replaced.json()["image_url"]) == f"photos/trainer_photo_2/{row_id}/start/fake3.jpg"
         assert fake_storage.deleted == [f"photos/trainer_photo_2/{row_id}/start/fake1.jpg"]
 
         deleted = client.delete(
@@ -529,7 +549,7 @@ def test_exercise_photo_upload_and_delete_success() -> None:
 
         listed_after = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id))
         item_after = next(row for row in listed_after.json() if row["row_id"] == row_id)
-        assert item_after["start_image_url"] == replaced.json()["image_url"]
+        assert _signed_object_key(item_after["start_image_url"]) == _signed_object_key(replaced.json()["image_url"])
         assert item_after["end_image_url"] is None
         app.state.plan_handler._runtime._video_storage = None
 
@@ -1165,17 +1185,17 @@ def test_platform_exercise_photo_upload_and_delete_success() -> None:
         uploaded = client.post(
             f"/api/v1/admin/platform-exercises/{row_id}/photos/end",
             headers=_ADMIN_HEADERS,
-            files={"file": ("end.webp", b"fake-photo-bytes", "image/webp")},
+            files={"file": ("end.webp", _WEBP, "image/webp")},
         )
         assert uploaded.status_code == 200
         image_url = uploaded.json()["image_url"]
         assert uploaded.json()["position"] == "end"
-        assert image_url == f"/api/v1/trainers/media/photos/platform/{row_id}/end/fake.webp"
+        assert _signed_object_key(image_url) == f"photos/platform/{row_id}/end/fake.webp"
 
         listed = client.get("/api/v1/platform-exercises")
         assert listed.status_code == 200
         item = next(row for row in listed.json() if row["row_id"] == row_id)
-        assert item["end_image_url"] == image_url
+        assert _signed_object_key(item["end_image_url"]) == _signed_object_key(image_url)
         assert item["start_image_url"] is None
 
         media = client.get(image_url)
@@ -1743,3 +1763,479 @@ def test_trainer_generation_policy_affects_generate() -> None:
         assert body["days"]
         for day in body["days"]:
             assert len(day["exercises"]) == 2
+
+
+class _ObjectStorage:
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.deleted: list[str] = []
+        self._seq = 0
+
+    async def upload_photo(self, *, owner_id: str, row_id: str, filename: str, data: bytes, position: str) -> str:
+        self._seq += 1
+        suffix = filename.rsplit(".", 1)[-1] if "." in filename else "jpg"
+        key = f"photos/{owner_id}/{row_id}/{position}/obj{self._seq}.{suffix}"
+        self.objects[key] = data
+        return key
+
+    def copy_owned(self, source_key: str, *, owner_id: str, row_id: str, slot: str) -> str:
+        ext = source_key.rsplit(".", 1)[-1]
+        if slot == "video":
+            dest = f"videos/{owner_id}/{row_id}/copy.{ext}"
+        else:
+            dest = f"photos/{owner_id}/{row_id}/{slot}/copy.{ext}"
+        self.objects[dest] = self.objects[source_key]
+        return dest
+
+    async def delete_media(self, object_name: str) -> None:
+        self.deleted.append(object_name)
+        self.objects.pop(object_name, None)
+
+    async def download_media(self, object_name: str) -> tuple[bytes, str]:
+        if object_name not in self.objects:
+            raise MediaNotFoundError("media not found")
+        return self.objects[object_name], "image/jpeg"
+
+    async def open_media(self, object_name: str) -> OpenedMedia:
+        data, content_type = await self.download_media(object_name)
+        midpoint = max(len(data) // 2, 1)
+
+        def chunks():
+            yield data[:midpoint]
+            rest = data[midpoint:]
+            if rest:
+                yield rest
+
+        return OpenedMedia(
+            content_type=content_type,
+            etag='"chunk-etag"',
+            content_length=len(data),
+            iterator=chunks(),
+        )
+
+
+def _use_storage(storage: _ObjectStorage) -> None:
+    app.state.plan_handler._runtime._video_storage = storage
+
+
+def _clear_storage() -> None:
+    app.state.plan_handler._runtime._video_storage = None
+
+
+def test_photo_upload_rejects_oversized_body_with_413() -> None:
+    trainer_user_id = "trainer_photo_413"
+    payload = {
+        "exercise_name": "Too Big Photo",
+        "equipment": "none",
+        "is_cardio": False,
+        "is_hold": False,
+        "difficulty": 1,
+        "workout_category": "full_body",
+    }
+    storage = _ObjectStorage()
+    settings = None
+    previous_limit = None
+    try:
+        with _client() as client:
+            _install_test_stubs()
+            _use_storage(storage)
+            settings = app.state.plan_handler._runtime.settings
+            previous_limit = settings.s3_max_photo_bytes
+            settings.s3_max_photo_bytes = 8
+            created = client.post(
+                f"/api/v1/trainers/{trainer_user_id}/exercises",
+                headers=_catalog(trainer_user_id),
+                json=payload,
+            )
+            assert created.status_code == 201
+            row_id = created.json()["row_id"]
+            small_over = client.post(
+                f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/start",
+                headers=_catalog(trainer_user_id),
+                files={"file": ("big.jpg", _JPEG + b"0123456789", "image/jpeg")},
+            )
+            assert small_over.status_code == 413
+            blocked = client.post(
+                f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/start",
+                headers=_catalog(trainer_user_id),
+                files={"file": ("huge.jpg", b"\xff\xd8\xff" + (b"x" * (80 * 1024)), "image/jpeg")},
+            )
+            assert blocked.status_code == 413
+            assert storage.objects == {}
+    finally:
+        if settings is not None and previous_limit is not None:
+            settings.s3_max_photo_bytes = previous_limit
+        _clear_storage()
+
+
+def test_photo_upload_rejects_spoofed_type_with_415() -> None:
+    trainer_user_id = "trainer_photo_415"
+    payload = {
+        "exercise_name": "Spoofed Photo",
+        "equipment": "none",
+        "is_cardio": False,
+        "is_hold": False,
+        "difficulty": 1,
+        "workout_category": "full_body",
+    }
+    storage = _ObjectStorage()
+    with _client() as client:
+        _install_test_stubs()
+        _use_storage(storage)
+        created = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=_catalog(trainer_user_id),
+            json=payload,
+        )
+        row_id = created.json()["row_id"]
+        spoofed = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/start",
+            headers=_catalog(trainer_user_id),
+            files={"file": ("start.jpg", _PNG, "image/jpeg")},
+        )
+        assert spoofed.status_code == 415
+        garbage = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/end",
+            headers=_catalog(trainer_user_id),
+            files={"file": ("end.webp", b"not-an-image", "image/webp")},
+        )
+        assert garbage.status_code == 415
+        assert storage.objects == {}
+        _clear_storage()
+
+
+def test_photo_upload_forbidden_for_another_trainer_and_wrong_role() -> None:
+    owner_id = "trainer_photo_owner"
+    payload = {
+        "exercise_name": "Owned Photo",
+        "equipment": "none",
+        "is_cardio": False,
+        "is_hold": False,
+        "difficulty": 1,
+        "workout_category": "full_body",
+    }
+    storage = _ObjectStorage()
+    with _client() as client:
+        _install_test_stubs()
+        _use_storage(storage)
+        created = client.post(
+            f"/api/v1/trainers/{owner_id}/exercises",
+            headers=_catalog(owner_id),
+            json=payload,
+        )
+        row_id = created.json()["row_id"]
+        other = client.post(
+            f"/api/v1/trainers/{owner_id}/exercises/{row_id}/photos/start",
+            headers=_auth("trainer_photo_other", role="trainer"),
+            files={"file": ("start.jpg", _JPEG, "image/jpeg")},
+        )
+        assert other.status_code == 403
+        client_role = client.post(
+            f"/api/v1/trainers/{owner_id}/exercises/{row_id}/photos/start",
+            headers=_auth(owner_id, role="client"),
+            files={"file": ("start.jpg", _JPEG, "image/jpeg")},
+        )
+        assert client_role.status_code == 403
+        assert storage.objects == {}
+        _clear_storage()
+
+
+def test_photo_upload_missing_row_leaves_no_object() -> None:
+    trainer_user_id = "trainer_photo_missing"
+    storage = _ObjectStorage()
+    with _client() as client:
+        _install_test_stubs()
+        _use_storage(storage)
+        missing = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/does-not-exist/photos/start",
+            headers=_catalog(trainer_user_id),
+            files={"file": ("start.jpg", _JPEG, "image/jpeg")},
+        )
+        assert missing.status_code == 404
+        assert storage.objects == {}
+        _clear_storage()
+
+
+def test_photo_upload_database_error_deletes_new_object() -> None:
+    trainer_user_id = "trainer_photo_rollback"
+    payload = {
+        "exercise_name": "Rollback Photo",
+        "equipment": "none",
+        "is_cardio": False,
+        "is_hold": False,
+        "difficulty": 1,
+        "workout_category": "full_body",
+    }
+    storage = _ObjectStorage()
+    with _client() as client:
+        _install_test_stubs()
+        _use_storage(storage)
+        created = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=_catalog(trainer_user_id),
+            json=payload,
+        )
+        row_id = created.json()["row_id"]
+        with patch(
+            "application.use_cases.PlanService.set_trainer_exercise_photo_url",
+            side_effect=IntegrationError("commit failed"),
+        ):
+            response = client.post(
+                f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/start",
+                headers=_catalog(trainer_user_id),
+                files={"file": ("start.jpg", _JPEG, "image/jpeg")},
+            )
+        assert response.status_code == 503
+        assert storage.deleted
+        assert storage.objects == {}
+        _clear_storage()
+
+
+def test_signed_media_url_valid_invalid_and_expired() -> None:
+    trainer_user_id = "trainer_photo_signed"
+    payload = {
+        "exercise_name": "Signed Photo",
+        "equipment": "none",
+        "is_cardio": False,
+        "is_hold": False,
+        "difficulty": 1,
+        "workout_category": "full_body",
+    }
+    storage = _ObjectStorage()
+    with _client() as client:
+        _install_test_stubs()
+        _use_storage(storage)
+        created = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=_catalog(trainer_user_id),
+            json=payload,
+        )
+        row_id = created.json()["row_id"]
+        uploaded = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/start",
+            headers=_catalog(trainer_user_id),
+            files={"file": ("start.jpg", _JPEG, "image/jpeg")},
+        )
+        assert uploaded.status_code == 200
+        image_url = uploaded.json()["image_url"]
+        media = client.get(image_url)
+        assert media.status_code == 200
+        assert media.content == _JPEG
+        assert media.headers["x-content-type-options"] == "nosniff"
+        assert media.headers["etag"] == '"chunk-etag"'
+        cached = client.get(image_url, headers={"If-None-Match": media.headers["etag"]})
+        assert cached.status_code == 304
+
+        unsigned = client.get(image_url.split("?", 1)[0])
+        assert unsigned.status_code == 403
+        tampered = image_url.replace("signature=", "signature=00")
+        assert client.get(tampered).status_code == 403
+
+        settings = app.state.plan_handler._runtime.settings
+        signer = MediaUrlSigner(
+            settings.media_url_signing_secret,
+            settings.media_url_ttl_seconds,
+        )
+        expired = signer.sign(_signed_object_key(image_url), now=int(time.time()) - settings.media_url_ttl_seconds - 5)
+        assert expired is not None
+        assert client.get(expired).status_code == 403
+        _clear_storage()
+
+
+def test_clone_replace_does_not_touch_platform_object() -> None:
+    trainer_user_id = "trainer_photo_clone"
+    storage = _ObjectStorage()
+    with _client() as client:
+        _install_test_stubs()
+        _auth_as_platform_admin()
+        _use_storage(storage)
+        created = client.post(
+            "/api/v1/admin/platform-exercises",
+            json={
+                "exercise_name": "Clone Photo Press",
+                "equipment": "none",
+                "is_cardio": False,
+                "is_hold": False,
+                "difficulty": 2,
+                "workout_category": "upper",
+                "catalog_key": "clone_photo_press",
+            },
+            headers=_ADMIN_HEADERS,
+        )
+        assert created.status_code == 201
+        platform_row_id = created.json()["row_id"]
+        uploaded = client.post(
+            f"/api/v1/admin/platform-exercises/{platform_row_id}/photos/start",
+            headers=_ADMIN_HEADERS,
+            files={"file": ("start.jpg", _JPEG, "image/jpeg")},
+        )
+        assert uploaded.status_code == 200
+        platform_key = _signed_object_key(uploaded.json()["image_url"])
+        assert platform_key.startswith("photos/platform/")
+
+        listed = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id))
+        assert listed.status_code == 200
+        cloned = next(item for item in listed.json() if item["exercise_name"] == "Clone Photo Press")
+        cloned_key = _signed_object_key(cloned["start_image_url"])
+        assert cloned_key.startswith(f"photos/{trainer_user_id}/")
+        assert cloned_key != platform_key
+        assert storage.objects[platform_key] == storage.objects[cloned_key] == _JPEG
+
+        replaced = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{cloned['row_id']}/photos/start",
+            headers=_catalog(trainer_user_id),
+            files={"file": ("start2.jpg", _JPEG + b"next", "image/jpeg")},
+        )
+        assert replaced.status_code == 200
+        assert platform_key not in storage.deleted
+        assert platform_key in storage.objects
+
+        _auth_as_platform_admin()
+        platform_media = client.get(uploaded.json()["image_url"])
+        assert platform_media.status_code == 200
+        assert platform_media.content == _JPEG
+        _clear_storage()
+
+
+def test_legacy_shared_platform_key_survives_replace(caplog) -> None:
+    trainer_user_id = "trainer_photo_legacy"
+    storage = _ObjectStorage()
+    with _client() as client:
+        _install_test_stubs()
+        _auth_as_platform_admin()
+        _use_storage(storage)
+        created = client.post(
+            "/api/v1/admin/platform-exercises",
+            json={
+                "exercise_name": "Legacy Shared Photo",
+                "equipment": "none",
+                "is_cardio": False,
+                "is_hold": False,
+                "difficulty": 2,
+                "workout_category": "lower",
+                "catalog_key": "legacy_shared_photo",
+            },
+            headers=_ADMIN_HEADERS,
+        )
+        platform_row_id = created.json()["row_id"]
+        uploaded = client.post(
+            f"/api/v1/admin/platform-exercises/{platform_row_id}/photos/end",
+            headers=_ADMIN_HEADERS,
+            files={"file": ("end.png", _PNG, "image/png")},
+        )
+        platform_key = _signed_object_key(uploaded.json()["image_url"])
+
+        trainer_created = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=_catalog(trainer_user_id),
+            json={
+                "exercise_name": "Legacy Shared Photo Trainer",
+                "equipment": "none",
+                "is_cardio": False,
+                "is_hold": False,
+                "difficulty": 2,
+                "workout_category": "lower",
+            },
+        )
+        trainer_row_id = trainer_created.json()["row_id"]
+        session = app.state.plan_handler._runtime._db_manager.create_session()
+        try:
+            model = session.get(TrainerExerciseModel, trainer_row_id)
+            assert model is not None
+            model.end_image_url = platform_key
+            session.commit()
+        finally:
+            session.close()
+
+        listed = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises", headers=_catalog(trainer_user_id))
+        trainer_item = next(item for item in listed.json() if item["row_id"] == trainer_row_id)
+        assert _signed_object_key(trainer_item["end_image_url"]) == platform_key
+
+        _auth_as_platform_admin()
+        replaced = client.post(
+            f"/api/v1/admin/platform-exercises/{platform_row_id}/photos/end",
+            headers=_ADMIN_HEADERS,
+            files={"file": ("end2.png", _PNG + b"v2", "image/png")},
+        )
+        assert replaced.status_code == 200
+        assert platform_key not in storage.deleted
+        assert platform_key in storage.objects
+        still_there = client.get(trainer_item["end_image_url"])
+        assert still_there.status_code == 200
+        assert still_there.content == _PNG
+
+        media_logger = logging.getLogger("presentation.http.handlers.plan_handler")
+        media_logger.disabled = False
+        caplog.set_level(logging.INFO, logger="presentation.http.handlers.plan_handler")
+        trainer_replaced = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{trainer_row_id}/photos/end",
+            headers=_catalog(trainer_user_id),
+            files={"file": ("end3.png", _PNG + b"own", "image/png")},
+        )
+        assert trainer_replaced.status_code == 200
+        assert platform_key not in storage.deleted
+        assert any(platform_key in message for message in caplog.messages)
+        _clear_storage()
+
+
+def test_archive_releases_owned_photo_and_logs_delete_failure(caplog) -> None:
+    trainer_user_id = "trainer_photo_archive"
+    payload = {
+        "exercise_name": "Archive Photo",
+        "equipment": "none",
+        "is_cardio": False,
+        "is_hold": False,
+        "difficulty": 1,
+        "workout_category": "full_body",
+    }
+    storage = _ObjectStorage()
+    with _client() as client:
+        _install_test_stubs()
+        _use_storage(storage)
+        created = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=_catalog(trainer_user_id),
+            json=payload,
+        )
+        row_id = created.json()["row_id"]
+        uploaded = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/start",
+            headers=_catalog(trainer_user_id),
+            files={"file": ("start.jpg", _JPEG, "image/jpeg")},
+        )
+        key = _signed_object_key(uploaded.json()["image_url"])
+        archived = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/archive",
+            headers=_catalog(trainer_user_id),
+        )
+        assert archived.status_code == 204
+        assert key in storage.deleted
+        listed = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises?include_archived=true",
+            headers=_catalog(trainer_user_id),
+        )
+        item = next(row for row in listed.json() if row["row_id"] == row_id)
+        assert item["start_image_url"] is None
+
+        uploaded_again = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/start",
+            headers=_catalog(trainer_user_id),
+            files={"file": ("start.jpg", _JPEG, "image/jpeg")},
+        )
+        assert uploaded_again.status_code == 200
+
+        async def _fail_delete(object_name: str) -> None:
+            raise IntegrationError(f"minio down {object_name}")
+
+        storage.delete_media = _fail_delete  # type: ignore[method-assign]
+        media_logger = logging.getLogger("presentation.http.handlers.plan_handler")
+        media_logger.disabled = False
+        caplog.set_level(logging.ERROR, logger="presentation.http.handlers.plan_handler")
+        replaced = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}/photos/start",
+            headers=_catalog(trainer_user_id),
+            files={"file": ("start2.jpg", _JPEG + b"b", "image/jpeg")},
+        )
+        assert replaced.status_code == 200
+        assert any("failed to delete media object" in message for message in caplog.messages)
+        _clear_storage()

@@ -44,6 +44,12 @@ class PlatformExerciseRepository:
     def find_by_row_id(self, row_id: str) -> PlatformExerciseModel | None:
         return self._session.get(PlatformExerciseModel, row_id)
 
+    def lock_for_media_update(self, row_id: str) -> PlatformExerciseModel | None:
+        statement = select(PlatformExerciseModel).where(PlatformExerciseModel.row_id == row_id)
+        if self._session.get_bind().dialect.name == "postgresql":
+            statement = statement.with_for_update()
+        return self._session.scalar(statement)
+
     def find_by_catalog_key(self, catalog_key: str) -> PlatformExerciseModel | None:
         statement = select(PlatformExerciseModel).where(PlatformExerciseModel.catalog_key == catalog_key)
         return self._session.scalar(statement)
