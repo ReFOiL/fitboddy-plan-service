@@ -45,6 +45,88 @@ class ReplacePlanExerciseCommand:
 
 
 @dataclass(frozen=True)
+class GetTrainerClientPlanCommand:
+    client_user_id: str
+    trainer_user_id: str
+
+
+@dataclass(frozen=True)
+class CreateEmptyPlanCommand:
+    client_user_id: str
+    trainer_user_id: str
+    goal: str
+    level: str
+    workouts_per_week: int
+    start_date: date | None
+    day_count: int
+
+
+@dataclass(frozen=True)
+class PlanSlotInput:
+    exercise_id: str
+    sets: int | None
+    sets_specified: bool
+    reps: int | None
+    reps_specified: bool
+    duration_seconds: int | None
+    duration_specified: bool
+    rest_seconds: int | None
+    rest_specified: bool
+    weight_kg: float | None
+    weight_specified: bool
+
+
+@dataclass(frozen=True)
+class ReplacePlanDaySlotsCommand:
+    client_user_id: str
+    trainer_user_id: str
+    day_index: int
+    slots: tuple[PlanSlotInput, ...]
+
+
+@dataclass(frozen=True)
+class AddPlanSlotCommand:
+    client_user_id: str
+    trainer_user_id: str
+    day_index: int
+    slot: PlanSlotInput
+
+
+@dataclass(frozen=True)
+class UpdatePlanSlotCommand:
+    client_user_id: str
+    trainer_user_id: str
+    day_index: int
+    line_id: str
+    sets: int | None
+    sets_specified: bool
+    reps: int | None
+    reps_specified: bool
+    duration_seconds: int | None
+    duration_specified: bool
+    rest_seconds: int | None
+    rest_specified: bool
+    weight_kg: float | None
+    weight_specified: bool
+
+
+@dataclass(frozen=True)
+class DeletePlanSlotCommand:
+    client_user_id: str
+    trainer_user_id: str
+    day_index: int
+    line_id: str
+
+
+@dataclass(frozen=True)
+class ReorderPlanSlotsCommand:
+    client_user_id: str
+    trainer_user_id: str
+    day_index: int
+    line_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ListTrainerExercisesCommand:
     trainer_user_id: str
     include_archived: bool
