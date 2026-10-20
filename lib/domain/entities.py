@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ class PlanExercise:
     rest_seconds: int | None
     weight_kg: float | None
     set_prescriptions: list[PlanSetPrescription]
+    note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,9 @@ class PlanDay:
     is_completed: bool
     completed_at: datetime | None
     exercises: list[PlanExercise]
+    scheduled_time: time | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from enum import Enum as PyEnum
 from typing import TypeVar
 
@@ -16,6 +16,7 @@ from sqlalchemy import (
     PrimaryKeyConstraint,
     String,
     Text,
+    Time,
     UniqueConstraint,
     func,
     text,
@@ -88,6 +89,10 @@ class PlanDayModel(Base):
     volume_multiplier: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     is_completed: Mapped[bool] = mapped_column(nullable=False, default=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    # Плановое время суток (HH:MM) и фактические метки старта/финиша тренировки.
+    scheduled_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
 
     plan: Mapped[TrainingPlanModel] = relationship("TrainingPlanModel", back_populates="days")
     exercises: Mapped[list[PlanExerciseModel]] = relationship(  # type: ignore[name-defined]
@@ -114,6 +119,7 @@ class PlanExerciseModel(Base):
     rest_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
     set_prescriptions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     day: Mapped[PlanDayModel] = relationship("PlanDayModel", back_populates="exercises")
 

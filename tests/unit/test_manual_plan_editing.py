@@ -121,12 +121,18 @@ def test_manual_plan_auth_and_client_forbidden() -> None:
             ("post", f"{base}/days/1/exercises", {"exercise_id": "missing-row"}),
             ("patch", f"{base}/days/1/exercises/line-1", {"sets": 4}),
             ("put", f"{base}/days/1/exercises/order", {"line_ids": []}),
+            ("post", f"{base}/days", {"week": 1, "day_of_week": 0}),
+            ("patch", f"{base}/days/1", {"scheduled_time": "18:00"}),
+            ("post", f"{base}/days/1/copy", {"week": 2, "day_of_week": 0}),
+            ("post", f"{base}/weeks/1/copy", {"target_week": 2}),
         ]
         for method, url, payload in forbidden_payloads:
             response = getattr(client, method)(url, headers=_auth(client_user_id), json=payload)
             assert response.status_code == 403, (method, url, response.text)
         deleted = client.delete(f"{base}/days/1/exercises/line-1", headers=_auth(client_user_id))
         assert deleted.status_code == 403
+        removed_day = client.delete(f"{base}/days/1", headers=_auth(client_user_id))
+        assert removed_day.status_code == 403
 
 
 def test_trainer_add_reorder_update_delete_and_replace_day() -> None:

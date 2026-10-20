@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from application.models import PlanDayModel, PlanExerciseModel, TrainingPlanModel
@@ -64,6 +64,34 @@ class PlanDayRepository:
             PlanDayModel.scheduled_for == scheduled_for,
         )
         return self._session.scalar(statement)
+
+    def find_by_plan_week_and_weekday(self, plan_id: str, week: int, day_of_week: int) -> PlanDayModel | None:
+        statement = select(PlanDayModel).where(
+            PlanDayModel.plan_id == plan_id,
+            PlanDayModel.week == week,
+            PlanDayModel.day_of_week == day_of_week,
+        )
+        return self._session.scalar(statement)
+
+    def list_for_plan(self, plan_id: str) -> list[PlanDayModel]:
+        statement = select(PlanDayModel).where(PlanDayModel.plan_id == plan_id)
+        return list(self._session.scalars(statement).all())
+
+    def count_for_plan(self, plan_id: str) -> int:
+        statement = select(func.count()).select_from(PlanDayModel).where(PlanDayModel.plan_id == plan_id)
+        return int(self._session.scalar(statement) or 0)
+
+    def max_day_index(self, plan_id: str) -> int:
+        statement = select(func.max(PlanDayModel.day_index)).where(PlanDayModel.plan_id == plan_id)
+        return int(self._session.scalar(statement) or 0)
+
+    def max_scheduled_for(self, plan_id: str) -> date | None:
+        statement = select(func.max(PlanDayModel.scheduled_for)).where(PlanDayModel.plan_id == plan_id)
+        return self._session.scalar(statement)
+
+    def delete(self, model: PlanDayModel) -> None:
+        self._session.delete(model)
+        self._session.flush()
 
 
 class PlanExerciseRepository:

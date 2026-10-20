@@ -1,5 +1,15 @@
+from datetime import time
+
 from application.generation.policy import GenerationPolicyConfig
-from domain.entities import ClientExerciseLoad, Muscle, PlanDay, PlatformExercise, TodayWorkout, TrainingPlan
+from domain.entities import (
+    ClientExerciseLoad,
+    Muscle,
+    PlanDay,
+    PlanExercise,
+    PlatformExercise,
+    TodayWorkout,
+    TrainingPlan,
+)
 from presentation.http.schemas import (
     ClientExerciseLoadResponse,
     GenerationPolicyResponse,
@@ -54,32 +64,10 @@ class PlanResponseFactory:
             volume_multiplier=day.volume_multiplier,
             is_completed=day.is_completed,
             completed_at=day.completed_at,
-            exercises=[
-                PlanExerciseResponse(
-                    line_id=line.line_id,
-                    exercise_id=line.exercise_id,
-                    exercise_name=line.exercise_name,
-                    category=line.category,
-                    is_cardio=line.is_cardio,
-                    sort_order=line.sort_order,
-                    sets=line.sets,
-                    reps=line.reps,
-                    duration_seconds=line.duration_seconds,
-                    rest_seconds=line.rest_seconds,
-                    weight_kg=line.weight_kg,
-                    set_prescriptions=[
-                        SetPrescriptionResponse(
-                            set_index=item.set_index,
-                            reps=item.reps,
-                            duration_seconds=item.duration_seconds,
-                            weight_kg=item.weight_kg,
-                            rest_seconds=item.rest_seconds,
-                        )
-                        for item in line.set_prescriptions
-                    ],
-                )
-                for line in day.exercises
-            ],
+            scheduled_time=PlanResponseFactory._clock(day.scheduled_time),
+            started_at=day.started_at,
+            finished_at=day.finished_at,
+            exercises=[PlanResponseFactory._exercise_response(line) for line in day.exercises],
         )
 
     @staticmethod
@@ -97,33 +85,44 @@ class PlanResponseFactory:
             volume_multiplier=day.volume_multiplier,
             is_completed=day.is_completed,
             completed_at=day.completed_at,
-            exercises=[
-                PlanExerciseResponse(
-                    line_id=line.line_id,
-                    exercise_id=line.exercise_id,
-                    exercise_name=line.exercise_name,
-                    category=line.category,
-                    is_cardio=line.is_cardio,
-                    sort_order=line.sort_order,
-                    sets=line.sets,
-                    reps=line.reps,
-                    duration_seconds=line.duration_seconds,
-                    rest_seconds=line.rest_seconds,
-                    weight_kg=line.weight_kg,
-                    set_prescriptions=[
-                        SetPrescriptionResponse(
-                            set_index=item.set_index,
-                            reps=item.reps,
-                            duration_seconds=item.duration_seconds,
-                            weight_kg=item.weight_kg,
-                            rest_seconds=item.rest_seconds,
-                        )
-                        for item in line.set_prescriptions
-                    ],
-                )
-                for line in day.exercises
-            ],
+            scheduled_time=PlanResponseFactory._clock(day.scheduled_time),
+            started_at=day.started_at,
+            finished_at=day.finished_at,
+            exercises=[PlanResponseFactory._exercise_response(line) for line in day.exercises],
         )
+
+    @staticmethod
+    def _exercise_response(line: PlanExercise) -> PlanExerciseResponse:
+        return PlanExerciseResponse(
+            line_id=line.line_id,
+            exercise_id=line.exercise_id,
+            exercise_name=line.exercise_name,
+            category=line.category,
+            is_cardio=line.is_cardio,
+            sort_order=line.sort_order,
+            sets=line.sets,
+            reps=line.reps,
+            duration_seconds=line.duration_seconds,
+            rest_seconds=line.rest_seconds,
+            weight_kg=line.weight_kg,
+            set_prescriptions=[
+                SetPrescriptionResponse(
+                    set_index=item.set_index,
+                    reps=item.reps,
+                    duration_seconds=item.duration_seconds,
+                    weight_kg=item.weight_kg,
+                    rest_seconds=item.rest_seconds,
+                )
+                for item in line.set_prescriptions
+            ],
+            note=line.note,
+        )
+
+    @staticmethod
+    def _clock(value: time | None) -> str | None:
+        if value is None:
+            return None
+        return value.strftime("%H:%M")
 
     @staticmethod
     def from_domain_client_load(load: ClientExerciseLoad) -> ClientExerciseLoadResponse:

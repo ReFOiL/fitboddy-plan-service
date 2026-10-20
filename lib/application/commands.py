@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 
 @dataclass(frozen=True)
@@ -35,6 +35,7 @@ class GetTodayWorkoutCommand:
 class CompletePlanDayCommand:
     user_id: str
     day_index: int
+    started_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ class PlanSlotInput:
     rest_specified: bool
     weight_kg: float | None
     weight_specified: bool
+    note: str | None
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,8 @@ class UpdatePlanSlotCommand:
     rest_specified: bool
     weight_kg: float | None
     weight_specified: bool
+    note: str | None
+    note_specified: bool
 
 
 @dataclass(frozen=True)
@@ -124,6 +128,50 @@ class ReorderPlanSlotsCommand:
     trainer_user_id: str
     day_index: int
     line_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AddPlanDayCommand:
+    client_user_id: str
+    trainer_user_id: str
+    week: int
+    day_of_week: int
+    scheduled_time: str | None
+
+
+@dataclass(frozen=True)
+class RemovePlanDayCommand:
+    client_user_id: str
+    trainer_user_id: str
+    day_index: int
+
+
+@dataclass(frozen=True)
+class UpdatePlanDayCommand:
+    client_user_id: str
+    trainer_user_id: str
+    day_index: int
+    scheduled_time: str | None
+    scheduled_time_specified: bool
+
+
+@dataclass(frozen=True)
+class CopyPlanDayCommand:
+    client_user_id: str
+    trainer_user_id: str
+    day_index: int
+    week: int
+    day_of_week: int
+    mode: str
+
+
+@dataclass(frozen=True)
+class CopyPlanWeekCommand:
+    client_user_id: str
+    trainer_user_id: str
+    week: int
+    target_week: int
+    mode: str
 
 
 @dataclass(frozen=True)

@@ -1,9 +1,13 @@
-from fastapi import APIRouter, File, Header, Query, Request, Response, UploadFile, status
+from fastapi import APIRouter, Body, File, Header, Query, Request, Response, UploadFile, status
 
 from presentation.http.upload_limits import read_upload_limited
 
 from presentation.http.schemas import (
+    AddPlanDayRequest,
     ClientExerciseLoadResponse,
+    CompletePlanDayRequest,
+    CopyPlanDayRequest,
+    CopyPlanWeekRequest,
     CreateEmptyPlanRequest,
     ExercisePhotoUploadResponse,
     ExerciseVideoUploadResponse,
@@ -18,6 +22,7 @@ from presentation.http.schemas import (
     TodayWorkoutResponse,
     TrainerExerciseResponse,
     TrainingPlanResponse,
+    UpdatePlanDayRequest,
     UpdatePlanSlotRequest,
     UpsertClientLoadRequest,
     UpsertGenerationPolicyRequest,
@@ -91,6 +96,37 @@ class PlanRoutes:
             methods=["DELETE"],
             status_code=status.HTTP_204_NO_CONTENT,
             response_class=Response,
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days",
+            self.add_plan_day,
+            methods=["POST"],
+            status_code=status.HTTP_201_CREATED,
+            response_model=TrainingPlanResponse,
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}",
+            self.remove_plan_day,
+            methods=["DELETE"],
+            response_model=TrainingPlanResponse,
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}",
+            self.update_plan_day,
+            methods=["PATCH"],
+            response_model=PlanDayResponse,
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}/copy",
+            self.copy_plan_day,
+            methods=["POST"],
+            response_model=TrainingPlanResponse,
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/weeks/{week}/copy",
+            self.copy_plan_week,
+            methods=["POST"],
+            response_model=TrainingPlanResponse,
         )
         self.router.add_api_route(
             "/plans/me/today",
@@ -396,8 +432,94 @@ class PlanRoutes:
         request: Request,
         day_index: int,
         authorization: str | None = Header(default=None),
+        payload: CompletePlanDayRequest | None = Body(default=None),
     ) -> TodayWorkoutResponse:
-        return request.app.state.plan_handler.complete_plan_day(authorization=authorization, day_index=day_index)
+        return request.app.state.plan_handler.complete_plan_day(
+            authorization=authorization,
+            day_index=day_index,
+            payload=payload,
+        )
+
+    @staticmethod
+    def add_plan_day(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        payload: AddPlanDayRequest,
+        authorization: str | None = Header(default=None),
+    ) -> TrainingPlanResponse:
+        return request.app.state.plan_handler.add_plan_day(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            payload=payload,
+        )
+
+    @staticmethod
+    def remove_plan_day(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        authorization: str | None = Header(default=None),
+    ) -> TrainingPlanResponse:
+        return request.app.state.plan_handler.remove_plan_day(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            day_index=day_index,
+        )
+
+    @staticmethod
+    def update_plan_day(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: UpdatePlanDayRequest,
+        authorization: str | None = Header(default=None),
+    ) -> PlanDayResponse:
+        return request.app.state.plan_handler.update_plan_day(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            day_index=day_index,
+            payload=payload,
+        )
+
+    @staticmethod
+    def copy_plan_day(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: CopyPlanDayRequest,
+        authorization: str | None = Header(default=None),
+    ) -> TrainingPlanResponse:
+        return request.app.state.plan_handler.copy_plan_day(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            day_index=day_index,
+            payload=payload,
+        )
+
+    @staticmethod
+    def copy_plan_week(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        week: int,
+        payload: CopyPlanWeekRequest,
+        authorization: str | None = Header(default=None),
+    ) -> TrainingPlanResponse:
+        return request.app.state.plan_handler.copy_plan_week(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            week=week,
+            payload=payload,
+        )
 
     @staticmethod
     def replace_plan_exercise(
