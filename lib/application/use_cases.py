@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from uuid import uuid4
 
 from sqlalchemy import func, or_, select
@@ -18,8 +18,11 @@ from application.commands import (
     ArchivePlatformExerciseCommand,
     ArchiveTrainerExerciseCommand,
     RestoreTrainerExerciseCommand,
+    AddPlanDayCommand,
     AddPlanSlotCommand,
     CompletePlanDayCommand,
+    CopyPlanDayCommand,
+    CopyPlanWeekCommand,
     CreateEmptyPlanCommand,
     DeletePlanSlotCommand,
     GeneratePlanCommand,
@@ -32,9 +35,11 @@ from application.commands import (
     ListPlatformExercisesCommand,
     ListTrainerExercisesCommand,
     PlanSlotInput,
+    RemovePlanDayCommand,
     ReorderPlanSlotsCommand,
     ReplacePlanDaySlotsCommand,
     ReplacePlanExerciseCommand,
+    UpdatePlanDayCommand,
     UpdatePlanSlotCommand,
     UpdatePlatformExerciseCommand,
     UpdateTrainerExerciseCommand,
@@ -95,6 +100,9 @@ logger = logging.getLogger(__name__)
 class PlanService:
     _ALLOWED_WORKOUT_CATEGORIES = {"upper", "lower", "core", "full_body"}
     _MAX_DAY_SLOTS = 24
+    _MAX_PLAN_DAYS = 28
+    _MAX_WEEK = 8
+    _MAX_NOTE_LENGTH = 500
 
     def __init__(
         self,
@@ -448,6 +456,93 @@ class PlanService:
             by_id[line_id].sort_order = index
         return self._commit_day(plan, day)
 
+    def add_plan_day(self, command: AddPlanDayCommand) -> TrainingPlan:
+        plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
+        self._validate_week_and_weekday(command.week, command.day_of_week)
+        if self._days.count_for_plan(plan.plan_id) >= self._MAX_PLAN_DAYS:
+            raise ValidationError(f"a plan can contain at most {self._MAX_PLAN_DAYS} days")
+        if self._days.find_by_plan_week_and_weekday(plan.plan_id, command.week, command.day_of_week) is not None:
+            raise ConflictError("plan day already exists")
+        # day_index уже выданных дней не сдвигаем: клиент завершает тренировку по нему.
+        self._create_plan_day(
+            plan,
+            week=command.week,
+            day_of_week=command.day_of_week,
+            scheduled_time=self._parse_scheduled_time(command.scheduled_time),
+            volume_multiplier=1.0,
+        )
+        return self._commit_plan(plan)
+
+    def remove_plan_day(self, command: RemovePlanDayCommand) -> TrainingPlan:
+        plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
+        day = self._require_plan_day(plan, command.day_index)
+        self._days.delete(day)
+        self._refresh_plan_end_date(plan)
+        return self._commit_plan(plan)
+
+    def update_plan_day(self, command: UpdatePlanDayCommand) -> PlanDay:
+        plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
+        day = self._require_plan_day(plan, command.day_index)
+        if not command.scheduled_time_specified:
+            raise ValidationError("scheduled_time is required")
+        day.scheduled_time = self._parse_scheduled_time(command.scheduled_time)
+        return self._commit_day(plan, day)
+
+    def copy_plan_day(self, command: CopyPlanDayCommand) -> TrainingPlan:
+        plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
+        source = self._require_plan_day(plan, command.day_index)
+        self._validate_week_and_weekday(command.week, command.day_of_week)
+        self._validate_copy_mode(command.mode)
+        if source.week == command.week and source.day_of_week == command.day_of_week:
+            raise ValidationError("cannot copy a day onto itself")
+        target = self._days.find_by_plan_week_and_weekday(plan.plan_id, command.week, command.day_of_week)
+        self._ensure_copy_fits(plan, source, target, command.mode)
+        if target is None:
+            # Новому дню переносим плановое время источника. Уже существующий день своё время сохраняет.
+            target = self._create_plan_day(
+                plan,
+                week=command.week,
+                day_of_week=command.day_of_week,
+                scheduled_time=source.scheduled_time,
+                volume_multiplier=source.volume_multiplier,
+            )
+        self._copy_slots(source, target, mode=command.mode)
+        return self._commit_plan(plan)
+
+    def copy_plan_week(self, command: CopyPlanWeekCommand) -> TrainingPlan:
+        plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
+        self._validate_week_and_weekday(command.week, 0)
+        self._validate_week_and_weekday(command.target_week, 0)
+        self._validate_copy_mode(command.mode)
+        if command.target_week == command.week:
+            raise ValidationError("target week must differ from the source week")
+        days = self._days.list_for_plan(plan.plan_id)
+        sources = [day for day in days if day.week == command.week]
+        if not sources:
+            raise ValidationError("source week has no days")
+        weekdays = [day.day_of_week for day in sources]
+        if len(weekdays) != len(set(weekdays)):
+            raise ValidationError("source week has two days on the same weekday")
+        targets_by_weekday = {day.day_of_week: day for day in days if day.week == command.target_week}
+        missing = [day for day in sources if day.day_of_week not in targets_by_weekday]
+        if len(days) + len(missing) > self._MAX_PLAN_DAYS:
+            raise ValidationError(f"a plan can contain at most {self._MAX_PLAN_DAYS} days")
+        for source in sources:
+            target = targets_by_weekday.get(source.day_of_week)
+            self._ensure_slot_room(source, target, command.mode)
+        for source in sorted(sources, key=lambda item: item.day_of_week):
+            target = targets_by_weekday.get(source.day_of_week)
+            if target is None:
+                target = self._create_plan_day(
+                    plan,
+                    week=command.target_week,
+                    day_of_week=source.day_of_week,
+                    scheduled_time=source.scheduled_time,
+                    volume_multiplier=source.volume_multiplier,
+                )
+            self._copy_slots(source, target, mode=command.mode)
+        return self._commit_plan(plan)
+
     def require_plan(self, plan_id: str) -> TrainingPlan:
         plan = self._plans.find_by_id(plan_id)
         if plan is None:
@@ -486,8 +581,13 @@ class PlanService:
             raise PlanNotFoundError("plan day not found")
         if day.is_completed:
             raise ConflictError("workout already completed")
+        # completed_at остаётся финишем для старых клиентов. finished_at — то же событие.
+        # started_at пишем только если клиент его прислал: сервер старт сам не выдумывает.
+        finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
         day.is_completed = True
-        day.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        day.completed_at = finished_at
+        day.finished_at = finished_at
+        day.started_at = self._normalize_started_at(command.started_at, finished_at)
         self._session.commit()
         self._session.refresh(day)
         return TodayWorkout(
@@ -1252,6 +1352,151 @@ class PlanService:
             return "end_image_url"
         raise ValidationError("invalid photo position (allowed: start, end)")
 
+    def _create_plan_day(
+        self,
+        plan: TrainingPlanModel,
+        *,
+        week: int,
+        day_of_week: int,
+        scheduled_time: time | None,
+        volume_multiplier: float,
+    ) -> PlanDayModel:
+        scheduled = self._date_for_week_weekday(plan.start_date, week, day_of_week)
+        if self._days.find_by_plan_and_date(plan.plan_id, scheduled) is not None:
+            raise ConflictError("plan day already exists")
+        if self._days.find_by_plan_week_and_weekday(plan.plan_id, week, day_of_week) is not None:
+            raise ConflictError("plan day already exists")
+        day = self._days.add(
+            PlanDayModel(
+                day_id=str(uuid4()),
+                plan_id=plan.plan_id,
+                day_index=self._days.max_day_index(plan.plan_id) + 1,
+                scheduled_for=scheduled,
+                week=week,
+                day_of_week=day_of_week,
+                volume_multiplier=volume_multiplier,
+                is_completed=False,
+                completed_at=None,
+                scheduled_time=scheduled_time,
+                started_at=None,
+                finished_at=None,
+            )
+        )
+        if scheduled > plan.end_date:
+            plan.end_date = scheduled
+        return day
+
+    def _ensure_copy_fits(
+        self,
+        plan: TrainingPlanModel,
+        source: PlanDayModel,
+        target: PlanDayModel | None,
+        mode: str,
+    ) -> None:
+        if target is None and self._days.count_for_plan(plan.plan_id) >= self._MAX_PLAN_DAYS:
+            raise ValidationError(f"a plan can contain at most {self._MAX_PLAN_DAYS} days")
+        self._ensure_slot_room(source, target, mode)
+
+    def _ensure_slot_room(self, source: PlanDayModel, target: PlanDayModel | None, mode: str) -> None:
+        incoming = len(list(source.exercises))
+        existing = 0 if target is None or mode == "overwrite" else len(list(target.exercises))
+        if existing + incoming > self._MAX_DAY_SLOTS:
+            raise ValidationError(f"a day can contain at most {self._MAX_DAY_SLOTS} exercises")
+
+    def _copy_slots(self, source: PlanDayModel, target: PlanDayModel, *, mode: str) -> None:
+        sources = sorted(list(source.exercises), key=lambda item: (item.sort_order, item.line_id))
+        if mode == "overwrite":
+            for line in list(target.exercises):
+                self._lines.delete(line)
+            next_order = 1
+        elif mode == "append":
+            next_order = max((line.sort_order for line in target.exercises), default=0) + 1
+        else:
+            raise ValidationError("mode must be overwrite or append")
+        for offset, line in enumerate(sources):
+            self._lines.add(self._clone_slot_line(line, target.day_id, next_order + offset))
+
+    @staticmethod
+    def _clone_slot_line(source: PlanExerciseModel, day_id: str, sort_order: int) -> PlanExerciseModel:
+        return PlanExerciseModel(
+            line_id=str(uuid4()),
+            day_id=day_id,
+            exercise_id=source.exercise_id,
+            exercise_name=source.exercise_name,
+            category=source.category,
+            is_cardio=source.is_cardio,
+            sort_order=sort_order,
+            sets=source.sets,
+            reps=source.reps,
+            duration_seconds=source.duration_seconds,
+            rest_seconds=source.rest_seconds,
+            weight_kg=source.weight_kg,
+            set_prescriptions_json=source.set_prescriptions_json,
+            note=source.note,
+        )
+
+    def _refresh_plan_end_date(self, plan: TrainingPlanModel) -> None:
+        # start_date — якорь недель, его не двигаем, иначе съедут уже созданные дни.
+        latest = self._days.max_scheduled_for(plan.plan_id)
+        plan.end_date = plan.start_date if latest is None or latest < plan.start_date else latest
+
+    def _commit_plan(self, plan: TrainingPlanModel) -> TrainingPlan:
+        self._touch_plan(plan)
+        self._session.commit()
+        self._session.refresh(plan)
+        return self._mapper.to_domain(plan)
+
+    def _validate_week_and_weekday(self, week: int, day_of_week: int) -> None:
+        if week < 1 or week > self._MAX_WEEK:
+            raise ValidationError(f"week must be between 1 and {self._MAX_WEEK}")
+        if day_of_week < 0 or day_of_week > 6:
+            raise ValidationError("day_of_week must be between 0 and 6 (Monday is 0)")
+
+    @staticmethod
+    def _validate_copy_mode(mode: str) -> None:
+        if mode not in {"overwrite", "append"}:
+            raise ValidationError("mode must be overwrite or append")
+
+    @staticmethod
+    def _date_for_week_weekday(start: date, week: int, day_of_week: int) -> date:
+        # Неделя плана — окно в 7 дней от start_date, а не календарная неделя.
+        # В таком окне каждый weekday встречается один раз.
+        week_start = start + timedelta(days=(week - 1) * 7)
+        offset = (day_of_week - week_start.weekday()) % 7
+        return week_start + timedelta(days=offset)
+
+    @staticmethod
+    def _parse_scheduled_time(value: str | None) -> time | None:
+        if value is None:
+            return None
+        try:
+            return datetime.strptime(value, "%H:%M").time()
+        except ValueError as exc:
+            raise ValidationError("scheduled_time must be HH:MM") from exc
+
+    def _clean_note(self, note: str | None) -> str | None:
+        if note is None:
+            return None
+        cleaned = note.strip()
+        if not cleaned:
+            return None
+        if len(cleaned) > self._MAX_NOTE_LENGTH:
+            raise ValidationError(f"note must be at most {self._MAX_NOTE_LENGTH} characters")
+        return cleaned
+
+    def _normalize_started_at(self, started_at: datetime | None, finished_at: datetime) -> datetime | None:
+        if started_at is None:
+            return None
+        if started_at.tzinfo is None:
+            normalized = started_at
+        else:
+            normalized = started_at.astimezone(timezone.utc).replace(tzinfo=None)
+        if normalized > finished_at:
+            raise ValidationError("started_at must not be after the workout finish time")
+        if finished_at - normalized > timedelta(days=7):
+            raise ValidationError("started_at is too far before the workout finish time")
+        return normalized
+
     def _require_trainer_plan(self, client_user_id: str, trainer_user_id: str) -> TrainingPlanModel:
         plan = self._plans.find_active_by_user(client_user_id)
         if plan is None or plan.source != "trainer" or plan.trainer_user_id != trainer_user_id:
@@ -1310,6 +1555,7 @@ class PlanService:
             rest_seconds=rest,
             weight_kg=weight,
             set_prescriptions_json=self._mapper.dumps_set_prescriptions(list(prescriptions.set_prescriptions)),
+            note=self._clean_note(slot.note),
         )
 
     def _apply_slot_dosage(
@@ -1318,6 +1564,7 @@ class PlanService:
         trainer_user_id: str,
         command: UpdatePlanSlotCommand,
     ) -> None:
+        cleaned_note = self._clean_note(command.note) if command.note_specified else None
         # The slot keeps the exercise snapshot from when it was added. Catalog
         # edits do not rewrite name, category, or hold-vs-reps mode. Scheme is
         # read only while applying this explicit dosage change.
@@ -1384,6 +1631,8 @@ class PlanService:
         line.rest_seconds = rest
         line.weight_kg = weight
         line.set_prescriptions_json = self._mapper.dumps_set_prescriptions(list(prescriptions.set_prescriptions))
+        if command.note_specified:
+            line.note = cleaned_note
 
     def _resolve_new_slot_dosage(
         self,

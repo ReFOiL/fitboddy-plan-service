@@ -27,6 +27,10 @@ from presentation.http.schemas import (
     AdminExerciseListResponse,
     AdminPlatformExerciseListResponse,
     ClientExerciseLoadResponse,
+    AddPlanDayRequest,
+    CompletePlanDayRequest,
+    CopyPlanDayRequest,
+    CopyPlanWeekRequest,
     CreateEmptyPlanRequest,
     ExercisePhotoUploadResponse,
     ExerciseVideoUploadResponse,
@@ -41,6 +45,7 @@ from presentation.http.schemas import (
     ReplacePlanDayRequest,
     ReorderPlanSlotsRequest,
     TodayWorkoutResponse,
+    UpdatePlanDayRequest,
     TrainerExerciseResponse,
     TrainingPlanResponse,
     UpdatePlanSlotRequest,
@@ -266,6 +271,119 @@ class PlanHttpHandler:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
+    def add_plan_day(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+        payload: AddPlanDayRequest,
+    ) -> TrainingPlanResponse:
+        try:
+            self._require_client_plan_editor(authorization, client_user_id, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                plan = plan_service.add_plan_day(
+                    self._request_factory.to_add_plan_day_command(client_user_id, trainer_user_id, payload)
+                )
+                return self._response_factory.from_domain_plan(plan)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def remove_plan_day(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+    ) -> TrainingPlanResponse:
+        try:
+            self._require_client_plan_editor(authorization, client_user_id, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                plan = plan_service.remove_plan_day(
+                    self._request_factory.to_remove_plan_day_command(client_user_id, trainer_user_id, day_index)
+                )
+                return self._response_factory.from_domain_plan(plan)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def update_plan_day(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: UpdatePlanDayRequest,
+    ) -> PlanDayResponse:
+        try:
+            self._require_client_plan_editor(authorization, client_user_id, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                day = plan_service.update_plan_day(
+                    self._request_factory.to_update_plan_day_command(
+                        client_user_id,
+                        trainer_user_id,
+                        day_index,
+                        payload,
+                    )
+                )
+                return self._response_factory.from_domain_day(day)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def copy_plan_day(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: CopyPlanDayRequest,
+    ) -> TrainingPlanResponse:
+        try:
+            self._require_client_plan_editor(authorization, client_user_id, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                plan = plan_service.copy_plan_day(
+                    self._request_factory.to_copy_plan_day_command(
+                        client_user_id,
+                        trainer_user_id,
+                        day_index,
+                        payload,
+                    )
+                )
+                return self._response_factory.from_domain_plan(plan)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def copy_plan_week(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+        week: int,
+        payload: CopyPlanWeekRequest,
+    ) -> TrainingPlanResponse:
+        try:
+            self._require_client_plan_editor(authorization, client_user_id, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                plan = plan_service.copy_plan_week(
+                    self._request_factory.to_copy_plan_week_command(
+                        client_user_id,
+                        trainer_user_id,
+                        week,
+                        payload,
+                    )
+                )
+                return self._response_factory.from_domain_plan(plan)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
     def get_plan_day(self, *, authorization: str | None, plan_id: str, day_index: int) -> PlanDayResponse:
         try:
             with self._runtime.plan_service_scope() as plan_service:
@@ -287,12 +405,18 @@ class PlanHttpHandler:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
 
-    def complete_plan_day(self, *, authorization: str | None, day_index: int) -> TodayWorkoutResponse:
+    def complete_plan_day(
+        self,
+        *,
+        authorization: str | None,
+        day_index: int,
+        payload: CompletePlanDayRequest | None,
+    ) -> TodayWorkoutResponse:
         try:
             user = self._require_current_user(authorization)
             with self._runtime.plan_service_scope() as plan_service:
                 workout = plan_service.complete_plan_day(
-                    self._request_factory.to_complete_day_command(user.user_id, day_index)
+                    self._request_factory.to_complete_day_command(user.user_id, day_index, payload)
                 )
                 return self._response_factory.from_domain_today(workout)
         except PlanError as exc:
@@ -1073,7 +1197,13 @@ class PlanHttpHandler:
         client_user_id: str,
         trainer_user_id: str,
     ) -> AuthUser:
-        user = self._require_client_plan_reader(authorization, client_user_id, trainer_user_id)
+        # Писать план может активный тренер этой связи и platform_admin. Клиент только читает.
+        user = self._require_current_user(authorization)
+        active_trainer_id = self._runtime.tenant_gateway.get_client_active_trainer_id(client_user_id)
+        if active_trainer_id != trainer_user_id:
+            raise ForbiddenError("active trainer-client relation required")
+        if user.role == "platform_admin":
+            return user
         if user.user_id != trainer_user_id or user.role != "trainer":
             raise ForbiddenError("only the client's trainer can edit the plan")
         return user

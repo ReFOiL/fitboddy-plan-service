@@ -69,9 +69,14 @@ class PlanMapper:
                     rest_seconds=line.rest_seconds,
                     weight_kg=line.weight_kg,
                     set_prescriptions=parse_set_prescriptions(line.set_prescriptions_json),
+                    note=line.note,
                 )
                 for line in exercises
             ],
+            scheduled_time=day.scheduled_time,
+            started_at=day.started_at,
+            # Старые завершения писали только completed_at: для них финиш — это оно.
+            finished_at=day.finished_at or day.completed_at,
         )
 
     @staticmethod

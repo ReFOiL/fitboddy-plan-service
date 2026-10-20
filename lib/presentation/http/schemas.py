@@ -114,6 +114,7 @@ class PlanExerciseResponse(BaseModel):
     rest_seconds: int | None
     weight_kg: float | None = None
     set_prescriptions: list[SetPrescriptionResponse] = Field(default_factory=list)
+    note: str | None = None
 
 
 class PlanDayResponse(BaseModel):
@@ -125,6 +126,9 @@ class PlanDayResponse(BaseModel):
     volume_multiplier: float
     is_completed: bool = False
     completed_at: datetime | None = None
+    scheduled_time: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     exercises: list[PlanExerciseResponse]
 
 
@@ -140,6 +144,9 @@ class TodayWorkoutResponse(BaseModel):
     volume_multiplier: float
     is_completed: bool
     completed_at: datetime | None = None
+    scheduled_time: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     exercises: list[PlanExerciseResponse]
 
 
@@ -177,6 +184,7 @@ class PlanSlotWriteRequest(BaseModel):
     duration_seconds: int | None = Field(default=None, ge=5, le=3600)
     rest_seconds: int | None = Field(default=None, ge=0, le=600)
     weight_kg: float | None = Field(default=None, ge=0)
+    note: str | None = Field(default=None, max_length=500)
 
 
 class ReplacePlanDayRequest(BaseModel):
@@ -191,10 +199,43 @@ class UpdatePlanSlotRequest(BaseModel):
     duration_seconds: int | None = Field(default=None, ge=5, le=3600)
     rest_seconds: int | None = Field(default=None, ge=0, le=600)
     weight_kg: float | None = Field(default=None, ge=0)
+    note: str | None = Field(default=None, max_length=500)
 
 
 class ReorderPlanSlotsRequest(BaseModel):
     line_ids: list[str] = Field(default_factory=list, max_length=24)
+
+
+_HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
+
+
+class AddPlanDayRequest(BaseModel):
+    """Добавить день в уже существующий план. day_of_week: понедельник = 0."""
+
+    week: int = Field(ge=1, le=8)
+    day_of_week: int = Field(ge=0, le=6)
+    scheduled_time: str | None = Field(default=None, pattern=_HHMM)
+
+
+class UpdatePlanDayRequest(BaseModel):
+    """Плановое время суток. null сбрасывает. Поле обязательно в теле запроса."""
+
+    scheduled_time: str | None = Field(default=None, pattern=_HHMM)
+
+
+class CopyPlanDayRequest(BaseModel):
+    week: int = Field(ge=1, le=8)
+    day_of_week: int = Field(ge=0, le=6)
+    mode: Literal["overwrite", "append"] = "overwrite"
+
+
+class CopyPlanWeekRequest(BaseModel):
+    target_week: int = Field(ge=1, le=8)
+    mode: Literal["overwrite", "append"] = "overwrite"
+
+
+class CompletePlanDayRequest(BaseModel):
+    started_at: datetime | None = None
 
 
 class SessionSizeBounds(BaseModel):

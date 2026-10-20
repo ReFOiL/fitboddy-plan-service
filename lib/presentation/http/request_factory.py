@@ -1,10 +1,13 @@
 from application.commands import (
+    AddPlanDayCommand,
     AddPlanSlotCommand,
     AddPlatformExerciseCommand,
     AddTrainerExerciseCommand,
     ArchivePlatformExerciseCommand,
     ArchiveTrainerExerciseCommand,
     CompletePlanDayCommand,
+    CopyPlanDayCommand,
+    CopyPlanWeekCommand,
     CreateEmptyPlanCommand,
     DeletePlanSlotCommand,
     GeneratePlanCommand,
@@ -17,10 +20,12 @@ from application.commands import (
     ListPlatformExercisesCommand,
     ListTrainerExercisesCommand,
     PlanSlotInput,
+    RemovePlanDayCommand,
     ReorderPlanSlotsCommand,
     ReplacePlanDaySlotsCommand,
     ReplacePlanExerciseCommand,
     RestoreTrainerExerciseCommand,
+    UpdatePlanDayCommand,
     UpdatePlanSlotCommand,
     UpdatePlatformExerciseCommand,
     UpdateTrainerExerciseCommand,
@@ -28,11 +33,16 @@ from application.commands import (
     UpsertClientPlatformLoadCommand,
 )
 from presentation.http.schemas import (
+    AddPlanDayRequest,
+    CompletePlanDayRequest,
+    CopyPlanDayRequest,
+    CopyPlanWeekRequest,
     CreateEmptyPlanRequest,
     GeneratePlanRequest,
     PlanSlotWriteRequest,
     ReplacePlanDayRequest,
     ReorderPlanSlotsRequest,
+    UpdatePlanDayRequest,
     UpdatePlanSlotRequest,
     UpsertClientLoadRequest,
     UpsertPlatformExerciseRequest,
@@ -137,6 +147,8 @@ class PlanRequestFactory:
             rest_specified="rest_seconds" in specified,
             weight_kg=payload.weight_kg,
             weight_specified="weight_kg" in specified,
+            note=payload.note,
+            note_specified="note" in specified,
         )
 
     @staticmethod
@@ -182,6 +194,79 @@ class PlanRequestFactory:
             rest_specified="rest_seconds" in specified,
             weight_kg=payload.weight_kg,
             weight_specified="weight_kg" in specified,
+            note=payload.note,
+        )
+
+    @staticmethod
+    def to_add_plan_day_command(
+        client_user_id: str,
+        trainer_user_id: str,
+        payload: AddPlanDayRequest,
+    ) -> AddPlanDayCommand:
+        return AddPlanDayCommand(
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            week=payload.week,
+            day_of_week=payload.day_of_week,
+            scheduled_time=payload.scheduled_time,
+        )
+
+    @staticmethod
+    def to_remove_plan_day_command(
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+    ) -> RemovePlanDayCommand:
+        return RemovePlanDayCommand(
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            day_index=day_index,
+        )
+
+    @staticmethod
+    def to_update_plan_day_command(
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: UpdatePlanDayRequest,
+    ) -> UpdatePlanDayCommand:
+        return UpdatePlanDayCommand(
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            day_index=day_index,
+            scheduled_time=payload.scheduled_time,
+            scheduled_time_specified="scheduled_time" in payload.model_fields_set,
+        )
+
+    @staticmethod
+    def to_copy_plan_day_command(
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: CopyPlanDayRequest,
+    ) -> CopyPlanDayCommand:
+        return CopyPlanDayCommand(
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            day_index=day_index,
+            week=payload.week,
+            day_of_week=payload.day_of_week,
+            mode=payload.mode,
+        )
+
+    @staticmethod
+    def to_copy_plan_week_command(
+        client_user_id: str,
+        trainer_user_id: str,
+        week: int,
+        payload: CopyPlanWeekRequest,
+    ) -> CopyPlanWeekCommand:
+        return CopyPlanWeekCommand(
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            week=week,
+            target_week=payload.target_week,
+            mode=payload.mode,
         )
 
     @staticmethod
@@ -193,8 +278,16 @@ class PlanRequestFactory:
         return GetTodayWorkoutCommand(user_id=user_id)
 
     @staticmethod
-    def to_complete_day_command(user_id: str, day_index: int) -> CompletePlanDayCommand:
-        return CompletePlanDayCommand(user_id=user_id, day_index=day_index)
+    def to_complete_day_command(
+        user_id: str,
+        day_index: int,
+        payload: CompletePlanDayRequest | None,
+    ) -> CompletePlanDayCommand:
+        return CompletePlanDayCommand(
+            user_id=user_id,
+            day_index=day_index,
+            started_at=None if payload is None else payload.started_at,
+        )
 
     @staticmethod
     def to_replace_exercise_command(user_id: str, day_index: int, line_id: str) -> ReplacePlanExerciseCommand:
