@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import text
@@ -10,7 +12,13 @@ from application.db import DatabaseManager
 from application.gateways import AuthGateway, ProfileGateway, TenantGateway
 from application.generation import build_default_generation_orchestrator
 from application.media_storage import S3MediaStorage
+from application.notifications.config import NotificationConfig
+from application.notifications.dispatcher import NotificationDispatcher
+from application.notifications.scheduler import start_notification_scheduler
+from application.notifications.telegram import TelegramSender
 from application.use_cases import PlanService
+
+logger = logging.getLogger(__name__)
 
 
 class PlanApplicationRuntime:
@@ -31,6 +39,13 @@ class PlanApplicationRuntime:
             http_client=self._http_client,
             tenant_service_url=settings.tenant_service_url,
         )
+        self._telegram_client = httpx.Client(timeout=10.0)
+        self._telegram_sender = TelegramSender(
+            self._telegram_client,
+            settings.telegram_bot_token,
+            settings.telegram_api_base,
+        )
+        self._scheduler = None
         self._video_storage = self._build_video_storage(settings)
 
     @property
@@ -62,7 +77,46 @@ class PlanApplicationRuntime:
                 profile_gateway=self._profile_gateway,
                 require_profile_completion=self._settings.require_profile_completion,
                 media_storage=self._video_storage,
+                plan_notice_debounce_seconds=self._settings.notifications_plan_debounce_seconds,
             )
+        finally:
+            session.close()
+
+    @contextmanager
+    def notification_session(self):
+        session = self._db_manager.create_session()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def start_scheduler(self, *, force: bool = False) -> None:
+        if self._scheduler is not None:
+            return
+        if not force and not self._settings.notifications_scheduler_enabled:
+            return
+        self._scheduler = start_notification_scheduler(
+            self.dispatch_notifications,
+            self._settings.notifications_poll_seconds,
+        )
+
+    def dispatch_notifications(self, now: datetime | None = None) -> None:
+        moment = now if now is not None else datetime.now(timezone.utc).replace(tzinfo=None)
+        session = self._db_manager.create_session()
+        try:
+            NotificationDispatcher(
+                session,
+                config=NotificationConfig.from_settings(self._settings),
+                sender=self._telegram_sender,
+                login_lookup=self._auth_gateway.get_logins,
+            ).run(moment)
+        except Exception:
+            session.rollback()
+            logger.exception("workout notification dispatch failed")
         finally:
             session.close()
 
@@ -72,6 +126,10 @@ class PlanApplicationRuntime:
         return True
 
     def shutdown(self) -> None:
+        if self._scheduler is not None:
+            self._scheduler.shutdown(wait=False)
+            self._scheduler = None
+        self._telegram_client.close()
         self._http_client.close()
         self._db_manager.dispose()
 

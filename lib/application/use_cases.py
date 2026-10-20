@@ -54,6 +54,7 @@ from application.errors import (
     ValidationError,
 )
 from application.media_keys import media_key_variants, normalize_stored_media
+from application.notifications.repository import NotificationRepository
 from application.media_storage import S3MediaStorage, copy_or_share
 from application.models import (
     PlanDayModel,
@@ -112,6 +113,7 @@ class PlanService:
         profile_gateway: ProfileGateway,
         require_profile_completion: bool,
         media_storage: S3MediaStorage | None = None,
+        plan_notice_debounce_seconds: int = 900,
     ) -> None:
         self._session = session
         self._plans = TrainingPlanRepository(session)
@@ -128,6 +130,8 @@ class PlanService:
         self._profile_gateway = profile_gateway
         self._require_profile_completion = require_profile_completion
         self._media_storage = media_storage
+        self._plan_notices = NotificationRepository(session)
+        self._plan_notice_debounce_seconds = plan_notice_debounce_seconds
 
     def list_muscles(self) -> list[Muscle]:
         return self._exercise_muscles.list_muscles()
@@ -302,6 +306,7 @@ class PlanService:
                             set_prescriptions_json=self._mapper.dumps_set_prescriptions(line.set_prescriptions),
                         )
                     )
+            self._note_trainer_plan_change(plan_model, created=True)
             self._session.commit()
         except IntegrityError as exc:
             self._session.rollback()
@@ -381,6 +386,7 @@ class PlanService:
                         volume_multiplier=1.0,
                     )
                 )
+            self._note_trainer_plan_change(plan_model, created=True)
             self._session.commit()
         except IntegrityError as exc:
             self._session.rollback()
@@ -443,6 +449,7 @@ class PlanService:
         self._lines.delete(line)
         self._renumber_slots(day)
         self._touch_plan(plan)
+        self._note_trainer_plan_change(plan, created=False)
         self._session.commit()
 
     def reorder_plan_slots(self, command: ReorderPlanSlotsCommand) -> PlanDay:
@@ -1442,6 +1449,7 @@ class PlanService:
 
     def _commit_plan(self, plan: TrainingPlanModel) -> TrainingPlan:
         self._touch_plan(plan)
+        self._note_trainer_plan_change(plan, created=False)
         self._session.commit()
         self._session.refresh(plan)
         return self._mapper.to_domain(plan)
@@ -1709,9 +1717,23 @@ class PlanService:
 
     def _commit_day(self, plan: TrainingPlanModel, day: PlanDayModel) -> PlanDay:
         self._touch_plan(plan)
+        self._note_trainer_plan_change(plan, created=False)
         self._session.commit()
         self._session.refresh(day)
         return self._mapper.day_to_domain(day)
+
+    def _note_trainer_plan_change(self, plan: TrainingPlanModel, *, created: bool) -> None:
+        # Слоты сами по себе не шлют сообщение: пачка правок ждёт debounce и уходит одним текстом.
+        if not plan.trainer_user_id:
+            return
+        self._plan_notices.mark_plan_changed(
+            plan_id=plan.plan_id,
+            client_user_id=plan.user_id,
+            trainer_user_id=plan.trainer_user_id,
+            created=created,
+            now=datetime.now(timezone.utc).replace(tzinfo=None),
+            debounce_seconds=self._plan_notice_debounce_seconds,
+        )
 
     @staticmethod
     def _touch_plan(plan: TrainingPlanModel) -> None:

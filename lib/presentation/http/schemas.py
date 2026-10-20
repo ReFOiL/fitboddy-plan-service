@@ -347,3 +347,25 @@ class AdminPlatformExerciseListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class NotificationSettingsResponse(BaseModel):
+    timezone: str
+    timezone_is_default: bool
+    notifications_enabled: bool
+    telegram_linked: bool
+
+
+class UpdateNotificationSettingsRequest(BaseModel):
+    timezone: str | None = Field(default=None, max_length=64)
+    notifications_enabled: bool | None = None
+
+
+class TelegramLinkCodeResponse(BaseModel):
+    code: str
+    expires_at: datetime
+
+
+class ConfirmTelegramLinkRequest(BaseModel):
+    code: str = Field(min_length=4, max_length=16)
+    chat_id: int = Field(gt=0)

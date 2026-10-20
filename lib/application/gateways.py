@@ -38,6 +38,33 @@ class AuthGateway:
         payload = response.json()
         return AuthUser(user_id=payload["user_id"], tenant_id=payload["tenant_id"], role=payload["role"])
 
+    def get_logins(self, user_ids: list[str]) -> dict[str, str]:
+        # Логин нужен только в тексте «клиент пропустил тренировку». Сбой auth не блокирует доставку.
+        unique = list(dict.fromkeys(user_id.strip() for user_id in user_ids if user_id.strip()))
+        if not unique:
+            return {}
+        try:
+            response = self._http_client.post(
+                f"{self._auth_service_url}/api/v1/auth/internal/summaries",
+                json={"user_ids": unique},
+            )
+        except httpx.HTTPError:
+            return {}
+        if response.status_code != 200:
+            return {}
+        items = response.json().get("items") or []
+        found: dict[str, str] = {}
+        if not isinstance(items, list):
+            return found
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            user_id = item.get("user_id")
+            login = item.get("login")
+            if isinstance(user_id, str) and isinstance(login, str) and login.strip():
+                found[user_id] = login.strip()
+        return found
+
     def require_platform_admin(self, access_token: str) -> AuthUser:
         user = self.get_current_user(access_token)
         if user.role != "platform_admin":

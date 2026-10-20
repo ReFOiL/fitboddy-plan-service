@@ -18,6 +18,8 @@ os.environ["ALEMBIC_INI_PATH"] = str((ROOT / "alembic.ini").resolve())
 os.environ["REQUIRE_PROFILE_COMPLETION"] = "false"
 os.environ["MEDIA_URL_SIGNING_SECRET"] = "test-media-signing-secret"
 os.environ["MEDIA_URL_TTL_SECONDS"] = "3600"
+os.environ["NOTIFICATIONS_SCHEDULER_ENABLED"] = "false"
+os.environ["TELEGRAM_BOT_TOKEN"] = ""
 
 alembic_cfg = Config(os.environ["ALEMBIC_INI_PATH"])
 alembic_cfg.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])

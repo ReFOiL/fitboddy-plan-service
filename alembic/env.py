@@ -8,6 +8,12 @@ from sqlalchemy import engine_from_config, pool
 
 from application.db import Base
 from application.models import PlanDayModel, PlanExerciseModel, TrainerExerciseModel, TrainingPlanModel
+from application.notifications.models import (  # noqa: F401
+    NotificationDeliveryModel,
+    NotificationPreferenceModel,
+    PlanUpdateNoticeModel,
+    TelegramLinkCodeModel,
+)
 
 config = context.config
 

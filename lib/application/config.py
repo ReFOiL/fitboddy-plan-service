@@ -1,5 +1,10 @@
-from pydantic import Field
+import re
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 class Settings(BaseSettings):
@@ -26,3 +31,50 @@ class Settings(BaseSettings):
     # HMAC для подписанных URL. Пустой секрет запрещает отдачу. Инфра задаёт MEDIA_URL_TTL_SECONDS (пример: 300).
     media_url_signing_secret: str = Field(default="", alias="MEDIA_URL_SIGNING_SECRET")
     media_url_ttl_seconds: int = Field(default=300, alias="MEDIA_URL_TTL_SECONDS")
+    # Планировщик в процессе API. Для отдельного воркера оставьте false и поднимите worker.
+    notifications_scheduler_enabled: bool = Field(default=False, alias="NOTIFICATIONS_SCHEDULER_ENABLED")
+    notifications_poll_seconds: int = Field(default=60, ge=10, le=3600, alias="NOTIFICATIONS_POLL_SECONDS")
+    notifications_default_timezone: str = Field(default="Asia/Vladivostok", alias="NOTIFICATIONS_DEFAULT_TIMEZONE")
+    notifications_morning_reminder: str = Field(default="09:00", alias="NOTIFICATIONS_MORNING_REMINDER")
+    notifications_reminder_lead_minutes: int = Field(
+        default=120,
+        ge=1,
+        le=720,
+        alias="NOTIFICATIONS_REMINDER_LEAD_MINUTES",
+    )
+    notifications_plan_debounce_seconds: int = Field(
+        default=900,
+        ge=0,
+        le=86400,
+        alias="NOTIFICATIONS_PLAN_DEBOUNCE_SECONDS",
+    )
+    notifications_plan_notice_ttl_seconds: int = Field(
+        default=7 * 24 * 3600,
+        ge=60,
+        alias="NOTIFICATIONS_PLAN_NOTICE_TTL_SECONDS",
+    )
+    notifications_missed_lookback_days: int = Field(default=2, ge=1, le=14, alias="NOTIFICATIONS_MISSED_LOOKBACK_DAYS")
+    notifications_link_code_ttl_seconds: int = Field(
+        default=900,
+        ge=60,
+        le=86400,
+        alias="NOTIFICATIONS_LINK_CODE_TTL_SECONDS",
+    )
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    telegram_api_base: str = Field(default="https://api.telegram.org", alias="TELEGRAM_API_BASE")
+
+    @field_validator("notifications_default_timezone")
+    @classmethod
+    def _known_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("NOTIFICATIONS_DEFAULT_TIMEZONE is not a known IANA timezone") from exc
+        return value
+
+    @field_validator("notifications_morning_reminder")
+    @classmethod
+    def _morning_clock(cls, value: str) -> str:
+        if _HHMM.fullmatch(value) is None:
+            raise ValueError("NOTIFICATIONS_MORNING_REMINDER must be HH:MM")
+        return value
