@@ -81,3 +81,7 @@ class PlanExerciseRepository:
             PlanExerciseModel.line_id == line_id,
         )
         return self._session.scalar(statement)
+
+    def delete(self, model: PlanExerciseModel) -> None:
+        self._session.delete(model)
+        self._session.flush()

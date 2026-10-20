@@ -13,8 +13,15 @@
 
 - `GET /health`
 - `GET /ready`
-- `POST /api/v1/plans/generate` - сгенерировать и сохранить активный 4-недельный план
+- `POST /api/v1/plans/generate` - сгенерировать и сохранить активный 4-недельный план. Предыдущий активный план клиента архивируется вместе с ручными правками слотов
 - `GET /api/v1/plans/users/{user_id}/active` - получить активный план пользователя
+- `GET /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/active` - активный план клиента у этого тренера (клиент и его тренер, только чтение для клиента)
+- `POST /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/active` - пустой план тренера, если активного ещё нет (`day_count: 0` — план без дней)
+- `PUT /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}` - заменить слоты дня упорядоченным списком (пустой список очищает день)
+- `POST /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}/exercises` - добавить слот в конец дня
+- `PATCH /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}/exercises/{line_id}` - обновить дозировку слота
+- `DELETE /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}/exercises/{line_id}` - удалить слот
+- `PUT /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}/exercises/order` - переставить слоты дня
 - `GET /api/v1/plans/{plan_id}/days/{day_index}` - получить конкретный день плана
 - `GET /api/v1/trainers/{trainer_user_id}/exercises` - список упражнений тренера (`include_archived=true` для полного списка)
 - `POST /api/v1/trainers/{trainer_user_id}/exercises` - добавить упражнение в каталог тренера (id генерируется на бэке)
@@ -60,6 +67,63 @@
 | `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `S3_SECURE` | Подключение к бакету. Ключ — только `photos/*` и `videos/*` |
 | `S3_MAX_PHOTO_BYTES` | Лимит фото, по умолчанию 15MB (шлюз может отсечь тело раньше, около 16MB) |
 | `S3_MAX_VIDEO_BYTES` | Лимит видео, по умолчанию 200MB |
+
+## Ручное редактирование
+
+Генерация — необязательное заполнение черновика из каталога и правил. Тренер правит уже активный план сам: слот ссылается на `trainer_exercises.row_id` (в плане это поле `exercise_id`). Название и дозировка копируются в слот в момент добавления. Позже изменение каталога план не пересобирает.
+
+`POST /api/v1/plans/generate` архивирует текущий активный план и пишет новый. Ручные правки сохраняются до следующей генерации и в новый план не переносятся.
+
+Менять план может только активный тренер клиента (`role=trainer`). Клиент эти же URL читает (`GET`), мутации получают 403. Пустой день и план без упражнений допустимы.
+
+Заменить день:
+
+```json
+PUT /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/1
+{
+  "slots": [
+    {
+      "exercise_id": "trainer-exercise-row-id",
+      "sets": 4,
+      "reps": 8,
+      "rest_seconds": 90,
+      "weight_kg": 40
+    }
+  ]
+}
+```
+
+Пустой день: `{ "slots": [] }`.
+
+Добавить слот:
+
+```json
+POST .../days/1/exercises
+{ "exercise_id": "trainer-exercise-row-id", "sets": 3, "reps": 10, "weight_kg": 12.5 }
+```
+
+Обновить дозировку (непереданные поля не меняются; `weight_kg: null` сбрасывает вес):
+
+```json
+PATCH .../days/1/exercises/{line_id}
+{ "sets": 5, "reps": 6, "rest_seconds": 120, "weight_kg": 50 }
+```
+
+Порядок — полный список `line_id` дня:
+
+```json
+PUT .../days/1/exercises/order
+{ "line_ids": ["line-b", "line-a"] }
+```
+
+Пустой план:
+
+```json
+POST /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/active
+{ "goal": "maintenance", "level": "intermediate", "workouts_per_week": 3, "day_count": 0 }
+```
+
+`day_count` от 1 до 28 создаёт пустые дни подряд от `start_date` (или от сегодня). Если активный план уже есть, ответ 409: чтобы заменить его черновиком из каталога, нужен `POST /api/v1/plans/generate`.
 
 ## Алгоритм
 

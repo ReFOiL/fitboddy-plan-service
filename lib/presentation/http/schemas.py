@@ -160,6 +160,43 @@ class TrainingPlanResponse(BaseModel):
     previous_adherence: float | None = None
 
 
+class CreateEmptyPlanRequest(BaseModel):
+    goal: str = Field(default="maintenance", min_length=2, max_length=32)
+    level: str = Field(default="intermediate", min_length=2, max_length=32)
+    workouts_per_week: int = Field(default=3, ge=1, le=7)
+    start_date: date | None = None
+    day_count: int = Field(default=0, ge=0, le=28)
+
+
+class PlanSlotWriteRequest(BaseModel):
+    """Dosage for a new slot. Omitted fields copy the trainer exercise defaults."""
+
+    exercise_id: str = Field(min_length=1, max_length=64)
+    sets: int | None = Field(default=None, ge=1, le=10)
+    reps: int | None = Field(default=None, ge=1, le=100)
+    duration_seconds: int | None = Field(default=None, ge=5, le=3600)
+    rest_seconds: int | None = Field(default=None, ge=0, le=600)
+    weight_kg: float | None = Field(default=None, ge=0)
+
+
+class ReplacePlanDayRequest(BaseModel):
+    slots: list[PlanSlotWriteRequest] = Field(default_factory=list, max_length=24)
+
+
+class UpdatePlanSlotRequest(BaseModel):
+    """Partial dosage update. Omitted fields stay; explicit null clears weight only."""
+
+    sets: int | None = Field(default=None, ge=1, le=10)
+    reps: int | None = Field(default=None, ge=1, le=100)
+    duration_seconds: int | None = Field(default=None, ge=5, le=3600)
+    rest_seconds: int | None = Field(default=None, ge=0, le=600)
+    weight_kg: float | None = Field(default=None, ge=0)
+
+
+class ReorderPlanSlotsRequest(BaseModel):
+    line_ids: list[str] = Field(default_factory=list, max_length=24)
+
+
 class SessionSizeBounds(BaseModel):
     min: int = Field(ge=1, le=12)
     max: int = Field(ge=1, le=12)

@@ -27,18 +27,23 @@ from presentation.http.schemas import (
     AdminExerciseListResponse,
     AdminPlatformExerciseListResponse,
     ClientExerciseLoadResponse,
+    CreateEmptyPlanRequest,
     ExercisePhotoUploadResponse,
     ExerciseVideoUploadResponse,
     GeneratePlanRequest,
     GenerationPolicyResponse,
     MuscleResponse,
     PlanDayResponse,
+    PlanSlotWriteRequest,
     PlatformExercisePhotoUploadResponse,
     PlatformExerciseResponse,
     PlatformExerciseVideoUploadResponse,
+    ReplacePlanDayRequest,
+    ReorderPlanSlotsRequest,
     TodayWorkoutResponse,
     TrainerExerciseResponse,
     TrainingPlanResponse,
+    UpdatePlanSlotRequest,
     UpsertClientLoadRequest,
     UpsertGenerationPolicyRequest,
     UpsertPlatformExerciseRequest,
@@ -93,6 +98,170 @@ class PlanHttpHandler:
             with self._runtime.plan_service_scope() as plan_service:
                 plan = plan_service.get_active_plan(self._request_factory.to_get_active_command(user_id))
                 return self._response_factory.from_domain_plan(plan)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def get_trainer_client_plan(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+    ) -> TrainingPlanResponse:
+        try:
+            self._require_client_plan_reader(authorization, client_user_id, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                plan = plan_service.get_trainer_client_plan(
+                    self._request_factory.to_get_trainer_client_plan_command(client_user_id, trainer_user_id)
+                )
+                return self._response_factory.from_domain_plan(plan)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def create_empty_plan(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+        payload: CreateEmptyPlanRequest,
+    ) -> TrainingPlanResponse:
+        try:
+            self._require_client_plan_editor(authorization, client_user_id, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                plan = plan_service.create_empty_plan(
+                    self._request_factory.to_create_empty_plan_command(client_user_id, trainer_user_id, payload)
+                )
+                return self._response_factory.from_domain_plan(plan)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def replace_plan_day_slots(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: ReplacePlanDayRequest,
+    ) -> PlanDayResponse:
+        try:
+            self._require_client_plan_editor(authorization, client_user_id, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                day = plan_service.replace_plan_day_slots(
+                    self._request_factory.to_replace_plan_day_command(
+                        client_user_id,
+                        trainer_user_id,
+                        day_index,
+                        payload,
+                    )
+                )
+                return self._response_factory.from_domain_day(day)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def add_plan_slot(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: PlanSlotWriteRequest,
+    ) -> PlanDayResponse:
+        try:
+            self._require_client_plan_editor(authorization, client_user_id, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                day = plan_service.add_plan_slot(
+                    self._request_factory.to_add_plan_slot_command(
+                        client_user_id,
+                        trainer_user_id,
+                        day_index,
+                        payload,
+                    )
+                )
+                return self._response_factory.from_domain_day(day)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def update_plan_slot(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        line_id: str,
+        payload: UpdatePlanSlotRequest,
+    ) -> PlanDayResponse:
+        try:
+            self._require_client_plan_editor(authorization, client_user_id, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                day = plan_service.update_plan_slot(
+                    self._request_factory.to_update_plan_slot_command(
+                        client_user_id,
+                        trainer_user_id,
+                        day_index,
+                        line_id,
+                        payload,
+                    )
+                )
+                return self._response_factory.from_domain_day(day)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def delete_plan_slot(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        line_id: str,
+    ) -> None:
+        try:
+            self._require_client_plan_editor(authorization, client_user_id, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                plan_service.delete_plan_slot(
+                    self._request_factory.to_delete_plan_slot_command(
+                        client_user_id,
+                        trainer_user_id,
+                        day_index,
+                        line_id,
+                    )
+                )
+                return
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def reorder_plan_slots(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: ReorderPlanSlotsRequest,
+    ) -> PlanDayResponse:
+        try:
+            self._require_client_plan_editor(authorization, client_user_id, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                day = plan_service.reorder_plan_slots(
+                    self._request_factory.to_reorder_plan_slots_command(
+                        client_user_id,
+                        trainer_user_id,
+                        day_index,
+                        payload,
+                    )
+                )
+                return self._response_factory.from_domain_day(day)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
@@ -882,6 +1051,31 @@ class PlanHttpHandler:
         active_trainer_id = self._runtime.tenant_gateway.get_client_active_trainer_id(client_user_id)
         if active_trainer_id != trainer_user_id:
             raise ForbiddenError("active trainer-client relation required")
+        return user
+
+    def _require_client_plan_reader(
+        self,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+    ) -> AuthUser:
+        user = self._require_current_user(authorization)
+        if user.user_id not in {client_user_id, trainer_user_id}:
+            raise ForbiddenError("not allowed to access this client's plan")
+        active_trainer_id = self._runtime.tenant_gateway.get_client_active_trainer_id(client_user_id)
+        if active_trainer_id != trainer_user_id:
+            raise ForbiddenError("active trainer-client relation required")
+        return user
+
+    def _require_client_plan_editor(
+        self,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+    ) -> AuthUser:
+        user = self._require_client_plan_reader(authorization, client_user_id, trainer_user_id)
+        if user.user_id != trainer_user_id or user.role != "trainer":
+            raise ForbiddenError("only the client's trainer can edit the plan")
         return user
 
     def _require_generate_access(self, authorization: str | None, payload: GeneratePlanRequest) -> AuthUser:

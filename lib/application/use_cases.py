@@ -18,16 +18,24 @@ from application.commands import (
     ArchivePlatformExerciseCommand,
     ArchiveTrainerExerciseCommand,
     RestoreTrainerExerciseCommand,
+    AddPlanSlotCommand,
     CompletePlanDayCommand,
+    CreateEmptyPlanCommand,
+    DeletePlanSlotCommand,
     GeneratePlanCommand,
     GetActivePlanCommand,
     GetPlanDayCommand,
     GetTodayWorkoutCommand,
+    GetTrainerClientPlanCommand,
     ListClientLoadsCommand,
     ListClientPlatformLoadsCommand,
     ListPlatformExercisesCommand,
     ListTrainerExercisesCommand,
+    PlanSlotInput,
+    ReorderPlanSlotsCommand,
+    ReplacePlanDaySlotsCommand,
     ReplacePlanExerciseCommand,
+    UpdatePlanSlotCommand,
     UpdatePlatformExerciseCommand,
     UpdateTrainerExerciseCommand,
     UpsertClientLoadCommand,
@@ -86,6 +94,7 @@ logger = logging.getLogger(__name__)
 
 class PlanService:
     _ALLOWED_WORKOUT_CATEGORIES = {"upper", "lower", "core", "full_body"}
+    _MAX_DAY_SLOTS = 24
 
     def __init__(
         self,
@@ -235,6 +244,8 @@ class PlanService:
             raise ValidationError("failed to build workout schedule")
 
         try:
+            # Generate is a draft fill: the previous active plan is archived, including
+            # any manual slot edits. Those edits are not copied onto the new plan.
             self._plans.replace_active(command.user_id)
             plan_id = str(uuid4())
             plan_model = self._plans.add(
@@ -318,6 +329,124 @@ class PlanService:
         if plan is None:
             raise PlanNotFoundError("active plan not found")
         return self._mapper.to_domain(plan)
+
+    def get_trainer_client_plan(self, command: GetTrainerClientPlanCommand) -> TrainingPlan:
+        plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
+        return self._mapper.to_domain(plan)
+
+    def create_empty_plan(self, command: CreateEmptyPlanCommand) -> TrainingPlan:
+        if self._plans.find_active_by_user(command.client_user_id) is not None:
+            raise ConflictError("user already has an active plan")
+        if command.day_count < 0 or command.day_count > 28:
+            raise ValidationError("day_count must be between 0 and 28")
+        goal = TrainingGoal.from_raw(command.goal)
+        level = TrainingLevel.from_raw(command.level)
+        workouts_per_week = self._normalize_workouts_per_week(command.workouts_per_week)
+        start = command.start_date if command.start_date is not None else date.today()
+        end = start if command.day_count == 0 else start + timedelta(days=command.day_count - 1)
+        plan_id = str(uuid4())
+        try:
+            plan_model = self._plans.add(
+                TrainingPlanModel(
+                    plan_id=plan_id,
+                    source="trainer",
+                    trainer_user_id=command.trainer_user_id,
+                    user_id=command.client_user_id,
+                    status="active",
+                    goal=goal.value,
+                    level=level.name.lower(),
+                    workouts_per_week=workouts_per_week,
+                    start_date=start,
+                    end_date=end,
+                )
+            )
+            for offset in range(command.day_count):
+                scheduled = start + timedelta(days=offset)
+                self._days.add(
+                    PlanDayModel(
+                        day_id=str(uuid4()),
+                        plan_id=plan_id,
+                        day_index=offset + 1,
+                        scheduled_for=scheduled,
+                        week=(offset // 7) + 1,
+                        day_of_week=scheduled.weekday(),
+                        volume_multiplier=1.0,
+                    )
+                )
+            self._session.commit()
+        except IntegrityError as exc:
+            self._session.rollback()
+            raise ConflictError("user already has an active plan") from exc
+        self._session.refresh(plan_model)
+        return self._mapper.to_domain(plan_model)
+
+    def replace_plan_day_slots(self, command: ReplacePlanDaySlotsCommand) -> PlanDay:
+        plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
+        day = self._require_plan_day(plan, command.day_index)
+        if len(command.slots) > self._MAX_DAY_SLOTS:
+            raise ValidationError(f"a day can contain at most {self._MAX_DAY_SLOTS} exercises")
+        prepared = [
+            self._make_slot_line(
+                day_id=day.day_id,
+                exercise=self._require_slot_exercise(command.trainer_user_id, slot.exercise_id),
+                slot=slot,
+                sort_order=index,
+            )
+            for index, slot in enumerate(command.slots, start=1)
+        ]
+        for line in list(day.exercises):
+            self._lines.delete(line)
+        for model in prepared:
+            self._lines.add(model)
+        return self._commit_day(plan, day)
+
+    def add_plan_slot(self, command: AddPlanSlotCommand) -> PlanDay:
+        plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
+        day = self._require_plan_day(plan, command.day_index)
+        if len(list(day.exercises)) >= self._MAX_DAY_SLOTS:
+            raise ValidationError(f"a day can contain at most {self._MAX_DAY_SLOTS} exercises")
+        exercise = self._require_slot_exercise(command.trainer_user_id, command.slot.exercise_id)
+        next_order = max((line.sort_order for line in day.exercises), default=0) + 1
+        self._lines.add(
+            self._make_slot_line(
+                day_id=day.day_id,
+                exercise=exercise,
+                slot=command.slot,
+                sort_order=next_order,
+            )
+        )
+        return self._commit_day(plan, day)
+
+    def update_plan_slot(self, command: UpdatePlanSlotCommand) -> PlanDay:
+        plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
+        day = self._require_plan_day(plan, command.day_index)
+        line = self._lines.find_by_day_and_line(day.day_id, command.line_id)
+        if line is None:
+            raise PlanNotFoundError("plan exercise not found")
+        self._apply_slot_dosage(line, command.trainer_user_id, command)
+        return self._commit_day(plan, day)
+
+    def delete_plan_slot(self, command: DeletePlanSlotCommand) -> None:
+        plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
+        day = self._require_plan_day(plan, command.day_index)
+        line = self._lines.find_by_day_and_line(day.day_id, command.line_id)
+        if line is None:
+            raise PlanNotFoundError("plan exercise not found")
+        self._lines.delete(line)
+        self._renumber_slots(day)
+        self._touch_plan(plan)
+        self._session.commit()
+
+    def reorder_plan_slots(self, command: ReorderPlanSlotsCommand) -> PlanDay:
+        plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
+        day = self._require_plan_day(plan, command.day_index)
+        current_ids = {line.line_id for line in day.exercises}
+        if len(command.line_ids) != len(set(command.line_ids)) or set(command.line_ids) != current_ids:
+            raise ValidationError("line_ids must list every exercise on the day exactly once")
+        by_id = {line.line_id: line for line in day.exercises}
+        for index, line_id in enumerate(command.line_ids, start=1):
+            by_id[line_id].sort_order = index
+        return self._commit_day(plan, day)
 
     def require_plan(self, plan_id: str) -> TrainingPlan:
         plan = self._plans.find_by_id(plan_id)
@@ -1122,6 +1251,222 @@ class PlanService:
         if position == "end":
             return "end_image_url"
         raise ValidationError("invalid photo position (allowed: start, end)")
+
+    def _require_trainer_plan(self, client_user_id: str, trainer_user_id: str) -> TrainingPlanModel:
+        plan = self._plans.find_active_by_user(client_user_id)
+        if plan is None or plan.source != "trainer" or plan.trainer_user_id != trainer_user_id:
+            raise PlanNotFoundError("active plan not found")
+        return plan
+
+    def _require_plan_day(self, plan: TrainingPlanModel, day_index: int) -> PlanDayModel:
+        if day_index < 1:
+            raise ValidationError("day_index must be >= 1")
+        day = self._days.find_by_plan_and_index(plan.plan_id, day_index)
+        if day is None:
+            raise PlanNotFoundError("plan day not found")
+        return day
+
+    def _require_slot_exercise(self, trainer_user_id: str, exercise_id: str) -> TrainerExerciseModel:
+        cleaned = exercise_id.strip()
+        if not cleaned:
+            raise ValidationError("exercise_id is required")
+        exercise = self._trainer_exercises.find_by_trainer_and_row_id(trainer_user_id, cleaned)
+        if exercise is None:
+            raise TrainerExerciseNotFoundError("trainer exercise not found")
+        if not exercise.is_active:
+            raise ValidationError("cannot add an archived exercise")
+        return exercise
+
+    def _make_slot_line(
+        self,
+        *,
+        day_id: str,
+        exercise: TrainerExerciseModel,
+        slot: PlanSlotInput,
+        sort_order: int,
+    ) -> PlanExerciseModel:
+        sets, reps, duration, rest, weight = self._resolve_new_slot_dosage(exercise, slot)
+        prescriptions = build_prescriptions(
+            working_weight=weight,
+            sets=sets,
+            load_scheme=(exercise.load_scheme or "flat").strip().lower(),
+            scheme_steps=parse_scheme_steps(exercise.scheme_steps_json),
+            is_hold=exercise.is_hold,
+            reps=reps,
+            duration_seconds=duration,
+            rest_seconds=rest,
+        )
+        return PlanExerciseModel(
+            line_id=str(uuid4()),
+            day_id=day_id,
+            exercise_id=exercise.row_id,
+            exercise_name=exercise.exercise_name,
+            category=exercise.workout_category,
+            is_cardio=exercise.is_cardio,
+            sort_order=sort_order,
+            sets=sets,
+            reps=reps,
+            duration_seconds=duration,
+            rest_seconds=rest,
+            weight_kg=weight,
+            set_prescriptions_json=self._mapper.dumps_set_prescriptions(list(prescriptions.set_prescriptions)),
+        )
+
+    def _apply_slot_dosage(
+        self,
+        line: PlanExerciseModel,
+        trainer_user_id: str,
+        command: UpdatePlanSlotCommand,
+    ) -> None:
+        # The slot keeps the exercise snapshot from when it was added. Catalog
+        # edits do not rewrite name, category, or hold-vs-reps mode. Scheme is
+        # read only while applying this explicit dosage change.
+        exercise = self._trainer_exercises.find_by_trainer_and_row_id(trainer_user_id, line.exercise_id)
+        is_hold = line.reps is None and line.duration_seconds is not None
+        if exercise is not None:
+            scheme = (exercise.load_scheme or "flat").strip().lower()
+            steps = parse_scheme_steps(exercise.scheme_steps_json)
+        else:
+            scheme = "flat"
+            steps = []
+        sets = self._pick_required_int(
+            specified=command.sets_specified,
+            value=command.sets,
+            default=line.sets if line.sets is not None else 3,
+            field="sets",
+            minimum=1,
+            maximum=10,
+        )
+        rest = self._pick_required_int(
+            specified=command.rest_specified,
+            value=command.rest_seconds,
+            default=0 if line.rest_seconds is None else line.rest_seconds,
+            field="rest_seconds",
+            minimum=0,
+            maximum=600,
+        )
+        weight = command.weight_kg if command.weight_specified else line.weight_kg
+        if weight is not None and weight < 0:
+            raise ValidationError("weight_kg must be >= 0")
+        if is_hold:
+            duration = self._pick_required_int(
+                specified=command.duration_specified,
+                value=command.duration_seconds,
+                default=line.duration_seconds,
+                field="duration_seconds",
+                minimum=5,
+                maximum=3600,
+            )
+            reps = None
+        else:
+            reps = self._pick_required_int(
+                specified=command.reps_specified,
+                value=command.reps,
+                default=line.reps,
+                field="reps",
+                minimum=1,
+                maximum=100,
+            )
+            duration = None
+        prescriptions = build_prescriptions(
+            working_weight=weight,
+            sets=sets,
+            load_scheme=scheme,
+            scheme_steps=steps,
+            is_hold=is_hold,
+            reps=reps,
+            duration_seconds=duration,
+            rest_seconds=rest,
+        )
+        line.sets = sets
+        line.reps = reps
+        line.duration_seconds = duration
+        line.rest_seconds = rest
+        line.weight_kg = weight
+        line.set_prescriptions_json = self._mapper.dumps_set_prescriptions(list(prescriptions.set_prescriptions))
+
+    def _resolve_new_slot_dosage(
+        self,
+        exercise: TrainerExerciseModel,
+        slot: PlanSlotInput,
+    ) -> tuple[int, int | None, int | None, int, float | None]:
+        sets = self._pick_required_int(
+            specified=slot.sets_specified,
+            value=slot.sets,
+            default=exercise.default_sets,
+            field="sets",
+            minimum=1,
+            maximum=10,
+        )
+        rest = self._pick_required_int(
+            specified=slot.rest_specified,
+            value=slot.rest_seconds,
+            default=exercise.default_rest_seconds,
+            field="rest_seconds",
+            minimum=0,
+            maximum=600,
+        )
+        weight = slot.weight_kg if slot.weight_specified else exercise.default_weight_kg
+        if weight is not None and weight < 0:
+            raise ValidationError("weight_kg must be >= 0")
+        if exercise.is_hold:
+            duration = self._pick_required_int(
+                specified=slot.duration_specified,
+                value=slot.duration_seconds,
+                default=exercise.default_duration_seconds,
+                field="duration_seconds",
+                minimum=5,
+                maximum=3600,
+            )
+            return sets, None, duration, rest, weight
+        reps = self._pick_required_int(
+            specified=slot.reps_specified,
+            value=slot.reps,
+            default=exercise.default_reps,
+            field="reps",
+            minimum=1,
+            maximum=100,
+        )
+        return sets, reps, None, rest, weight
+
+    @staticmethod
+    def _pick_required_int(
+        *,
+        specified: bool,
+        value: int | None,
+        default: int | None,
+        field: str,
+        minimum: int,
+        maximum: int,
+    ) -> int:
+        if specified:
+            if value is None:
+                raise ValidationError(f"{field} cannot be cleared")
+            chosen = value
+        else:
+            if default is None:
+                raise ValidationError(f"{field} is required")
+            chosen = default
+        if chosen < minimum or chosen > maximum:
+            raise ValidationError(f"{field} must be between {minimum} and {maximum}")
+        return chosen
+
+    def _renumber_slots(self, day: PlanDayModel) -> None:
+        self._session.flush()
+        self._session.expire(day, ["exercises"])
+        ordered = sorted(list(day.exercises), key=lambda item: (item.sort_order, item.line_id))
+        for index, line in enumerate(ordered, start=1):
+            line.sort_order = index
+
+    def _commit_day(self, plan: TrainingPlanModel, day: PlanDayModel) -> PlanDay:
+        self._touch_plan(plan)
+        self._session.commit()
+        self._session.refresh(day)
+        return self._mapper.day_to_domain(day)
+
+    @staticmethod
+    def _touch_plan(plan: TrainingPlanModel) -> None:
+        plan.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     @staticmethod
     def _normalize_workouts_per_week(value: int) -> int:

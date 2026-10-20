@@ -4,16 +4,21 @@ from presentation.http.upload_limits import read_upload_limited
 
 from presentation.http.schemas import (
     ClientExerciseLoadResponse,
+    CreateEmptyPlanRequest,
     ExercisePhotoUploadResponse,
     ExerciseVideoUploadResponse,
     GeneratePlanRequest,
     GenerationPolicyResponse,
     MuscleResponse,
     PlanDayResponse,
+    PlanSlotWriteRequest,
     PlatformExerciseResponse,
+    ReplacePlanDayRequest,
+    ReorderPlanSlotsRequest,
     TodayWorkoutResponse,
     TrainerExerciseResponse,
     TrainingPlanResponse,
+    UpdatePlanSlotRequest,
     UpsertClientLoadRequest,
     UpsertGenerationPolicyRequest,
     UpsertTrainerExerciseRequest,
@@ -41,6 +46,51 @@ class PlanRoutes:
             self.get_active_plan,
             methods=["GET"],
             response_model=TrainingPlanResponse,
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/active",
+            self.get_trainer_client_plan,
+            methods=["GET"],
+            response_model=TrainingPlanResponse,
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/active",
+            self.create_empty_plan,
+            methods=["POST"],
+            status_code=status.HTTP_201_CREATED,
+            response_model=TrainingPlanResponse,
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}",
+            self.replace_plan_day_slots,
+            methods=["PUT"],
+            response_model=PlanDayResponse,
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}/exercises",
+            self.add_plan_slot,
+            methods=["POST"],
+            status_code=status.HTTP_201_CREATED,
+            response_model=PlanDayResponse,
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}/exercises/order",
+            self.reorder_plan_slots,
+            methods=["PUT"],
+            response_model=PlanDayResponse,
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}/exercises/{line_id}",
+            self.update_plan_slot,
+            methods=["PATCH"],
+            response_model=PlanDayResponse,
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}/exercises/{line_id}",
+            self.delete_plan_slot,
+            methods=["DELETE"],
+            status_code=status.HTTP_204_NO_CONTENT,
+            response_class=Response,
         )
         self.router.add_api_route(
             "/plans/me/today",
@@ -204,6 +254,122 @@ class PlanRoutes:
         authorization: str | None = Header(default=None),
     ) -> TrainingPlanResponse:
         return request.app.state.plan_handler.get_active_plan(authorization=authorization, user_id=user_id)
+
+    @staticmethod
+    def get_trainer_client_plan(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> TrainingPlanResponse:
+        return request.app.state.plan_handler.get_trainer_client_plan(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+        )
+
+    @staticmethod
+    def create_empty_plan(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        payload: CreateEmptyPlanRequest,
+        authorization: str | None = Header(default=None),
+    ) -> TrainingPlanResponse:
+        return request.app.state.plan_handler.create_empty_plan(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            payload=payload,
+        )
+
+    @staticmethod
+    def replace_plan_day_slots(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: ReplacePlanDayRequest,
+        authorization: str | None = Header(default=None),
+    ) -> PlanDayResponse:
+        return request.app.state.plan_handler.replace_plan_day_slots(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            day_index=day_index,
+            payload=payload,
+        )
+
+    @staticmethod
+    def add_plan_slot(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: PlanSlotWriteRequest,
+        authorization: str | None = Header(default=None),
+    ) -> PlanDayResponse:
+        return request.app.state.plan_handler.add_plan_slot(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            day_index=day_index,
+            payload=payload,
+        )
+
+    @staticmethod
+    def reorder_plan_slots(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: ReorderPlanSlotsRequest,
+        authorization: str | None = Header(default=None),
+    ) -> PlanDayResponse:
+        return request.app.state.plan_handler.reorder_plan_slots(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            day_index=day_index,
+            payload=payload,
+        )
+
+    @staticmethod
+    def update_plan_slot(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        line_id: str,
+        payload: UpdatePlanSlotRequest,
+        authorization: str | None = Header(default=None),
+    ) -> PlanDayResponse:
+        return request.app.state.plan_handler.update_plan_slot(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            day_index=day_index,
+            line_id=line_id,
+            payload=payload,
+        )
+
+    @staticmethod
+    def delete_plan_slot(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        line_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> Response:
+        request.app.state.plan_handler.delete_plan_slot(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            day_index=day_index,
+            line_id=line_id,
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @staticmethod
     def get_plan_day(
