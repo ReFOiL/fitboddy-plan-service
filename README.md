@@ -191,6 +191,81 @@ POST /api/v1/plans/me/days/1/complete
 { "started_at": "2026-10-20T18:02:00Z" }
 ```
 
+## Уведомления
+
+Три события, короткие сообщения на русском, доставка в Telegram:
+
+- клиенту в день тренировки: за `NOTIFICATIONS_REMINDER_LEAD_MINUTES` (по умолчанию 2 часа) до `scheduled_time`, а если времени нет — в `NOTIFICATIONS_MORNING_REMINDER` (по умолчанию 09:00) местного пояса;
+- тренеру, если день прошёл без `is_completed`. С `scheduled_time` дедлайн — это местное время, без него — полночь следующего дня. Смотрим назад не дальше `NOTIFICATIONS_MISSED_LOOKBACK_DAYS`;
+- клиенту, когда тренер создал или изменил план. Правки слотов не шлют сообщение каждая: они сдвигают одну отложенную запись на `NOTIFICATIONS_PLAN_DEBOUNCE_SECONDS` (по умолчанию 15 минут). Завершение тренировки клиентом сюда не входит.
+
+`scheduled_time` — колонка из PR #5 (`0021_plan_notes_times`). Эта ветка собрана поверх неё.
+
+Пояс клиента: `notification_preferences.timezone`, иначе `NOTIFICATIONS_DEFAULT_TIMEZONE` (`Asia/Vladivostok`). Отключение — `notifications_enabled: false` на пользователя, на все три события. Повторная отправка того же события не проходит: ключ доставки уникален. Нет чата или токена — событие остаётся до конца окна (для плана — до `NOTIFICATIONS_PLAN_NOTICE_TTL_SECONDS`), затем помечается как пропущенное.
+
+В платформе Telegram ни к кому не привязан. `fitboddy_tgbot` — отдельный контур, там `users.telegram_id` и есть сам пользователь, кода привязки нет. Здесь привязка такая:
+
+1. `POST /api/v1/plans/me/notifications/telegram/link-code` — код для вошедшего пользователя.
+2. Бот (его ещё нет в `fitboddy_tgbot`) вызывает `POST /api/v1/plans/internal/notifications/telegram` с заголовком `X-Service-Token: $INTERNAL_SERVICE_TOKEN` и телом `{ "code": "...", "chat_id": 123 }`.
+3. `DELETE /api/v1/plans/me/notifications/telegram` снимает чат.
+4. `GET` и `PUT /api/v1/plans/me/notifications/settings` — пояс и `notifications_enabled`. `timezone: null` возвращает пояс по умолчанию. `chat_id` в ответе нет, только `telegram_linked`.
+
+Пути под `/api/v1/plans`, их уже проксирует шлюз. Внутренний confirm тоже попадает под этот префикс, пока в `api_locations.inc` нет более длинного запрета:
+
+```nginx
+location ^~ /api/v1/plans/internal {
+    default_type application/json;
+    return 403 '{"detail":"internal endpoint is not exposed"}';
+}
+```
+
+Его нужно поставить рядом с остальными internal-запретами. До этого ручку закрывает только `INTERNAL_SERVICE_TOKEN` (пустое значение отклоняет вызов).
+
+Планировщик — APScheduler. В процессе API он выключен (`NOTIFICATIONS_SCHEDULER_ENABLED=false`), чтобы не дублировать воркер. Отдельный контейнер того же образа:
+
+```yaml
+plan-notifications:
+  build:
+    context: ../fitboddy-plan-service
+  command: ["python", "-m", "presentation.notifications.worker"]
+  environment:
+    PYTHONPATH: /app/lib
+    DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-fitboddy}:${POSTGRES_PASSWORD:-fitboddy_local_dev}@postgres:5432/fitboddy_plan
+    AUTH_SERVICE_URL: http://auth-service:8000
+    TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    NOTIFICATIONS_DEFAULT_TIMEZONE: ${NOTIFICATIONS_DEFAULT_TIMEZONE:-Asia/Vladivostok}
+    NOTIFICATIONS_MORNING_REMINDER: ${NOTIFICATIONS_MORNING_REMINDER:-09:00}
+    NOTIFICATIONS_REMINDER_LEAD_MINUTES: ${NOTIFICATIONS_REMINDER_LEAD_MINUTES:-120}
+    NOTIFICATIONS_PLAN_DEBOUNCE_SECONDS: ${NOTIFICATIONS_PLAN_DEBOUNCE_SECONDS:-900}
+    NOTIFICATIONS_MISSED_LOOKBACK_DAYS: ${NOTIFICATIONS_MISSED_LOOKBACK_DAYS:-2}
+    NOTIFICATIONS_POLL_SECONDS: ${NOTIFICATIONS_POLL_SECONDS:-60}
+    INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-fitboddy_internal_dev}
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+```
+
+Образ `ghcr` подставляется так же, как у `plan-service` в `docker-compose.ghcr.yml`. Репозиторий `fitboddy-infra-docker` этим агентом не пишется: сервис нужно добавить там. Пока контейнера нет, на самом `plan-service` можно выставить `NOTIFICATIONS_SCHEDULER_ENABLED=true` — идемпотентность не даст второму процессу послать то же событие ещё раз.
+
+Без `TELEGRAM_BOT_TOKEN` воркер жив, но ничего не отправляет.
+
+| Переменная | Назначение |
+| --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Токен Bot API. Пустой — доставка выключена |
+| `TELEGRAM_API_BASE` | По умолчанию `https://api.telegram.org` |
+| `NOTIFICATIONS_SCHEDULER_ENABLED` | `true` только у процесса, который тикает. У API оставьте `false`, если есть воркер |
+| `NOTIFICATIONS_POLL_SECONDS` | Период тика, по умолчанию 60 |
+| `NOTIFICATIONS_DEFAULT_TIMEZONE` | IANA-пояс, если у пользователя свой не записан. По умолчанию `Asia/Vladivostok` |
+| `NOTIFICATIONS_MORNING_REMINDER` | `HH:MM` местного времени, если у дня нет `scheduled_time` |
+| `NOTIFICATIONS_REMINDER_LEAD_MINUTES` | За сколько минут до `scheduled_time` писать клиенту |
+| `NOTIFICATIONS_PLAN_DEBOUNCE_SECONDS` | Пауза после последней правки плана |
+| `NOTIFICATIONS_PLAN_NOTICE_TTL_SECONDS` | Сколько ждать чат для сообщения о плане |
+| `NOTIFICATIONS_MISSED_LOOKBACK_DAYS` | Сколько дней после дедлайна ещё сообщать о пропуске |
+| `NOTIFICATIONS_LINK_CODE_TTL_SECONDS` | Срок кода привязки Telegram |
+| `INTERNAL_SERVICE_TOKEN` | Уже есть у сервисов. Им бот подтверждает код |
+| `AUTH_SERVICE_URL` | Необязательный логин клиента в тексте о пропуске (`POST /api/v1/auth/internal/summaries`) |
+
 ## Поиск клиента по логину
 
 Логины хранит `fitboddy-auth-service` (`auth_users.login`), не plan-service. Уже есть внутренний `POST /api/v1/auth/internal/summaries` (id → login) и админский `GET /api/v1/admin/users?q=` (только `platform_admin`, в ответе есть email). Тренеру этого мало: приглашение в `fitboddy-tenant-service` принимает `client_user_id`.
