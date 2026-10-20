@@ -1,12 +1,30 @@
 from __future__ import annotations
 
 from enum import IntEnum, StrEnum
+from typing import assert_never
 
 
 class TrainingLevel(IntEnum):
+    """Client rank. Integers order the levels; they are not the 1–5 difficulty scale."""
+
     BEGINNER = 2
     INTERMEDIATE = 3
     ADVANCED = 4
+
+    def max_catalog_difficulty(self) -> int:
+        """Highest catalog difficulty (1–5) this level may be prescribed.
+
+        beginner ≤ 2, intermediate ≤ 4, advanced ≤ 5.
+        """
+        match self:
+            case TrainingLevel.BEGINNER:
+                return 2
+            case TrainingLevel.INTERMEDIATE:
+                return 4
+            case TrainingLevel.ADVANCED:
+                return 5
+            case _:
+                assert_never(self)
 
     @classmethod
     def from_raw(cls, raw: str | "TrainingLevel" | None) -> "TrainingLevel":

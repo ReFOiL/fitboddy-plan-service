@@ -26,7 +26,7 @@ class CatalogMatchingCalculator(AbstractMatchingCalculator):
         available = {equipment_match_key(item) for item in request.available_equipment}
         if equipment_match_key(exercise.equipment) not in available:
             return False
-        if exercise.difficulty > int(request.level):
+        if exercise.difficulty > request.level.max_catalog_difficulty():
             return False
         return True
 
