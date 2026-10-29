@@ -9,6 +9,9 @@ from presentation.http.schemas import (
     CopyPlanDayRequest,
     CopyPlanWeekRequest,
     CreateEmptyPlanRequest,
+    ApplyCatalogSyncRequest,
+    ApplyCatalogSyncResponse,
+    CatalogSyncPreviewResponse,
     ExercisePhotoUploadResponse,
     ExerciseVideoUploadResponse,
     GeneratePlanRequest,
@@ -176,6 +179,18 @@ class PlanRoutes:
             methods=["POST"],
             status_code=status.HTTP_201_CREATED,
             response_model=TrainerExerciseResponse,
+        )
+        self.router.add_api_route(
+            "/trainers/{trainer_user_id}/exercises/sync-preview",
+            self.preview_catalog_sync,
+            methods=["GET"],
+            response_model=CatalogSyncPreviewResponse,
+        )
+        self.router.add_api_route(
+            "/trainers/{trainer_user_id}/exercises/sync",
+            self.apply_catalog_sync,
+            methods=["POST"],
+            response_model=ApplyCatalogSyncResponse,
         )
         self.router.add_api_route(
             "/trainers/{trainer_user_id}/exercises/{row_id}",
@@ -579,6 +594,30 @@ class PlanRoutes:
         authorization: str | None = Header(default=None),
     ) -> TrainerExerciseResponse:
         return request.app.state.plan_handler.add_trainer_exercise(
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+            payload=payload,
+        )
+
+    @staticmethod
+    def preview_catalog_sync(
+        request: Request,
+        trainer_user_id: str,
+        authorization: str | None = Header(default=None),
+    ) -> CatalogSyncPreviewResponse:
+        return request.app.state.plan_handler.preview_catalog_sync(
+            authorization=authorization,
+            trainer_user_id=trainer_user_id,
+        )
+
+    @staticmethod
+    async def apply_catalog_sync(
+        request: Request,
+        trainer_user_id: str,
+        payload: ApplyCatalogSyncRequest,
+        authorization: str | None = Header(default=None),
+    ) -> ApplyCatalogSyncResponse:
+        return await request.app.state.plan_handler.apply_catalog_sync(
             authorization=authorization,
             trainer_user_id=trainer_user_id,
             payload=payload,

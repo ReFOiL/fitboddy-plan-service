@@ -136,9 +136,28 @@ class MuscleModel(Base):
 
 class TrainerExerciseModel(Base):
     __tablename__ = "trainer_exercises"
+    __table_args__ = (
+        Index(
+            "uq_trainer_exercises_source_platform",
+            "trainer_user_id",
+            "source_platform_exercise_id",
+            unique=True,
+            sqlite_where=text("source_platform_exercise_id IS NOT NULL"),
+            postgresql_where=text("source_platform_exercise_id IS NOT NULL"),
+        ),
+    )
 
     row_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     trainer_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source_platform_exercise_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey(
+            "platform_exercises.row_id",
+            name="fk_trainer_exercises_source_platform",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
     exercise_name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     equipment: Mapped[str] = mapped_column(String(32), nullable=False, default="none")
@@ -157,6 +176,9 @@ class TrainerExerciseModel(Base):
     video_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     start_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     end_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    synced_video_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    synced_start_image_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    synced_end_image_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False),

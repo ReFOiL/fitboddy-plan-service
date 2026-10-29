@@ -5,6 +5,7 @@ import time
 from fastapi import HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 
+from application.catalog_sync import CatalogSyncAdd, CatalogSyncCard, CatalogSyncPlan, CatalogSyncUpdate
 from application.errors import ForbiddenError, IntegrationError, PlanError, UnauthorizedError, ValidationError
 from application.gateways import AuthUser
 from application.generation.policy import GenerationPolicyConfig
@@ -26,6 +27,13 @@ from presentation.http.response_factory import PlanResponseFactory
 from presentation.http.schemas import (
     AdminExerciseListResponse,
     AdminPlatformExerciseListResponse,
+    ApplyCatalogSyncRequest,
+    ApplyCatalogSyncResponse,
+    CatalogSyncAddItem,
+    CatalogSyncExerciseCard,
+    CatalogSyncPreviewResponse,
+    CatalogSyncSummary,
+    CatalogSyncUpdateItem,
     ClientExerciseLoadResponse,
     AddPlanDayRequest,
     CompletePlanDayRequest,
@@ -455,6 +463,47 @@ class PlanHttpHandler:
                     self._request_factory.to_list_trainer_exercises_command(trainer_user_id, include_archived)
                 )
                 return [self._trainer_exercise_response(item) for item in items]
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def preview_catalog_sync(
+        self,
+        *,
+        authorization: str | None,
+        trainer_user_id: str,
+    ) -> CatalogSyncPreviewResponse:
+        try:
+            self._require_self_trainer(authorization, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                plan = plan_service.preview_catalog_sync(
+                    self._request_factory.to_preview_catalog_sync_command(trainer_user_id)
+                )
+                return self._catalog_sync_preview_response(plan)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    async def apply_catalog_sync(
+        self,
+        *,
+        authorization: str | None,
+        trainer_user_id: str,
+        payload: ApplyCatalogSyncRequest,
+    ) -> ApplyCatalogSyncResponse:
+        try:
+            self._require_self_trainer(authorization, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                result = plan_service.apply_catalog_sync(
+                    self._request_factory.to_apply_catalog_sync_command(trainer_user_id, payload)
+                )
+            await self._release_media_keys(list(result.replaced_media_keys), owner_id=trainer_user_id)
+            return ApplyCatalogSyncResponse(
+                added_count=len(result.added_ids),
+                updated_count=len(result.updated_ids),
+                added_ids=list(result.added_ids),
+                updated_ids=list(result.updated_ids),
+            )
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")
@@ -1271,6 +1320,51 @@ class PlanHttpHandler:
         if signed is None:
             raise IntegrationError("media url signing is not configured")
         return signed
+
+    def _catalog_sync_preview_response(self, plan: CatalogSyncPlan) -> CatalogSyncPreviewResponse:
+        return CatalogSyncPreviewResponse(
+            summary=CatalogSyncSummary(
+                new_count=plan.new_count,
+                media_update_count=plan.media_update_count,
+                unchanged_count=plan.unchanged_count,
+            ),
+            add=[self._catalog_sync_add_item(item) for item in plan.add],
+            update=[self._catalog_sync_update_item(item) for item in plan.update],
+        )
+
+    def _catalog_sync_add_item(self, item: CatalogSyncAdd) -> CatalogSyncAddItem:
+        signer = self._signer()
+        return CatalogSyncAddItem(
+            platform_exercise_id=item.platform_exercise_id,
+            exercise_name=item.exercise_name,
+            description=item.description,
+            primary_muscles=list(item.primary_muscles),
+            secondary_muscles=list(item.secondary_muscles),
+            video_url=signer.sign(item.video_url),
+            start_image_url=signer.sign(item.start_image_url),
+            end_image_url=signer.sign(item.end_image_url),
+        )
+
+    def _catalog_sync_update_item(self, item: CatalogSyncUpdate) -> CatalogSyncUpdateItem:
+        return CatalogSyncUpdateItem(
+            platform_exercise_id=item.platform_exercise_id,
+            trainer_exercise_id=item.trainer_exercise_id,
+            changed_fields=list(item.changed_fields),
+            trainer=self._catalog_sync_card(item.trainer),
+            platform=self._catalog_sync_card(item.platform),
+        )
+
+    def _catalog_sync_card(self, card: CatalogSyncCard) -> CatalogSyncExerciseCard:
+        signer = self._signer()
+        return CatalogSyncExerciseCard(
+            exercise_name=card.exercise_name,
+            description=card.description,
+            primary_muscles=list(card.primary_muscles),
+            secondary_muscles=list(card.secondary_muscles),
+            video_url=signer.sign(card.video_url),
+            start_image_url=signer.sign(card.start_image_url),
+            end_image_url=signer.sign(card.end_image_url),
+        )
 
     def _trainer_exercise_response(self, item: TrainerExercise) -> TrainerExerciseResponse:
         response = TrainerExerciseResponse.model_validate(item, from_attributes=True)

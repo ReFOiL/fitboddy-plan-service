@@ -3,6 +3,7 @@ from application.commands import (
     AddPlanSlotCommand,
     AddPlatformExerciseCommand,
     AddTrainerExerciseCommand,
+    ApplyCatalogSyncCommand,
     ArchivePlatformExerciseCommand,
     ArchiveTrainerExerciseCommand,
     CompletePlanDayCommand,
@@ -19,6 +20,7 @@ from application.commands import (
     ListClientPlatformLoadsCommand,
     ListPlatformExercisesCommand,
     ListTrainerExercisesCommand,
+    PreviewCatalogSyncCommand,
     PlanSlotInput,
     RemovePlanDayCommand,
     ReorderPlanSlotsCommand,
@@ -34,6 +36,7 @@ from application.commands import (
 )
 from presentation.http.schemas import (
     AddPlanDayRequest,
+    ApplyCatalogSyncRequest,
     CompletePlanDayRequest,
     CopyPlanDayRequest,
     CopyPlanWeekRequest,
@@ -476,3 +479,19 @@ class PlanRequestFactory:
     @staticmethod
     def to_archive_platform_exercise_command(row_id: str) -> ArchivePlatformExerciseCommand:
         return ArchivePlatformExerciseCommand(row_id=row_id)
+
+    @staticmethod
+    def to_preview_catalog_sync_command(trainer_user_id: str) -> PreviewCatalogSyncCommand:
+        return PreviewCatalogSyncCommand(trainer_user_id=trainer_user_id)
+
+    @staticmethod
+    def to_apply_catalog_sync_command(
+        trainer_user_id: str,
+        payload: ApplyCatalogSyncRequest,
+    ) -> ApplyCatalogSyncCommand:
+        return ApplyCatalogSyncCommand(
+            trainer_user_id=trainer_user_id,
+            add_ids=list(payload.add_ids),
+            update_ids=list(payload.update_ids),
+            include_media=payload.include_media,
+        )

@@ -30,6 +30,8 @@
 - `GET /api/v1/plans/{plan_id}/days/{day_index}` - получить конкретный день плана
 - `GET /api/v1/trainers/{trainer_user_id}/exercises` - список упражнений тренера (`include_archived=true` для полного списка)
 - `POST /api/v1/trainers/{trainer_user_id}/exercises` - добавить упражнение в каталог тренера (id генерируется на бэке)
+- `GET /api/v1/trainers/{trainer_user_id}/exercises/sync-preview` - предпросмотр мягкой синхронизации с системным каталогом, без записи
+- `POST /api/v1/trainers/{trainer_user_id}/exercises/sync` - применить выбранные добавления и обновления медиа
 - `GET /api/v1/trainers/{trainer_user_id}/exercises/{row_id}` - получить упражнение тренера (для клиента — просмотр деталей)
 - `PUT /api/v1/trainers/{trainer_user_id}/exercises/{row_id}` - обновить упражнение тренера
 - `POST /api/v1/trainers/{trainer_user_id}/exercises/{row_id}/archive` - архивировать упражнение (soft archive)
@@ -72,6 +74,30 @@
 | `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `S3_SECURE` | Подключение к бакету. Ключ — только `photos/*` и `videos/*` |
 | `S3_MAX_PHOTO_BYTES` | Лимит фото, по умолчанию 15MB (шлюз может отсечь тело раньше, около 16MB) |
 | `S3_MAX_VIDEO_BYTES` | Лимит видео, по умолчанию 200MB |
+
+## Мягкая синхронизация каталога
+
+Пустой каталог тренера по-прежнему клонируется целиком при первом чтении. Дальше списки расходятся: новые системные упражнения и обновлённые медиа подтягиваются только через sync.
+
+`GET .../exercises/sync-preview` ничего не пишет. `summary.new_count + summary.media_update_count + summary.unchanged_count` равно числу активных упражнений платформы.
+
+Связь: `trainer_exercises.source_platform_exercise_id`. Её ставит клон и apply. Если ссылки ещё нет (каталог до миграции), совпадение однозначного нормализованного имени (`strip`, схлопнутые пробелы, `casefold`) считается той же логической строкой. Два кандидата с одним именем не связываются. Переименование после записи ссылки не создаёт дубль.
+
+`add[]` — упражнения платформы без пары. Карточка: `platform_exercise_id`, имя, описание, `primary_muscles` / `secondary_muscles` (slug), подписанные `video_url`, `start_image_url`, `end_image_url`.
+
+`update[]` — активная пара, у которой ключ медиа платформы отличается от ключа последней копии (`synced_*_key`). В паре стороны `trainer` и `platform` и `changed_fields` (`video_url`, `start_image_url`, `end_image_url`). Сравнение текущих ключей тренера и платформы не используется: клон хранит копию под другим ключом. Пустое медиа платформы тренерское не стирает. Отличия названия и описания сами по себе в `update` не попадают.
+
+`POST .../exercises/sync` принимает id упражнений **платформы**:
+
+```json
+{ "add_ids": ["<platform row_id>"], "update_ids": ["<platform row_id>"], "include_media": false }
+```
+
+- `add_ids` создаёт только выбранные строки (имя, описание, дозировка, мышцы). Медиа копируется, только если `include_media` true.
+- `update_ids` копирует только слоты из `changed_fields` и только при `include_media` true. Название, описание, дозировка и мышцы тренера не меняются.
+- Повторный вызов не создаёт вторую строку. Уже связанный `add_id` пропускается и, если ссылка была только по имени, записывает `source_platform_exercise_id`.
+- Чужой id — 422. `update_ids` при `include_media: false` — 422.
+- Доступ тот же, что у остальных мутаций каталога тренера: пользователь совпадает с `trainer_user_id`.
 
 ## Ручное редактирование
 

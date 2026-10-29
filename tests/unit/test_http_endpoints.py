@@ -1779,11 +1779,12 @@ class _ObjectStorage:
         return key
 
     def copy_owned(self, source_key: str, *, owner_id: str, row_id: str, slot: str) -> str:
+        self._seq += 1
         ext = source_key.rsplit(".", 1)[-1]
         if slot == "video":
-            dest = f"videos/{owner_id}/{row_id}/copy.{ext}"
+            dest = f"videos/{owner_id}/{row_id}/copy{self._seq}.{ext}"
         else:
-            dest = f"photos/{owner_id}/{row_id}/{slot}/copy.{ext}"
+            dest = f"photos/{owner_id}/{row_id}/{slot}/copy{self._seq}.{ext}"
         self.objects[dest] = self.objects[source_key]
         return dest
 
@@ -2239,3 +2240,398 @@ def test_archive_releases_owned_photo_and_logs_delete_failure(caplog) -> None:
         assert replaced.status_code == 200
         assert any("failed to delete media object" in message for message in caplog.messages)
         _clear_storage()
+
+
+def _exercise_write_body(item: dict, **overrides: object) -> dict:
+    body = {
+        "exercise_name": item["exercise_name"],
+        "description": item.get("description"),
+        "equipment": item["equipment"],
+        "is_cardio": item["is_cardio"],
+        "is_hold": item["is_hold"],
+        "difficulty": item["difficulty"],
+        "workout_category": item["workout_category"],
+        "default_sets": item["default_sets"],
+        "default_reps": item.get("default_reps"),
+        "default_duration_seconds": item.get("default_duration_seconds"),
+        "default_rest_seconds": item["default_rest_seconds"],
+        "default_weight_kg": item.get("default_weight_kg"),
+        "load_scheme": item.get("load_scheme", "flat"),
+        "scheme_steps": item.get("scheme_steps") or [],
+        "primary_muscles": item.get("primary_muscles") or [],
+        "secondary_muscles": item.get("secondary_muscles") or [],
+    }
+    if "catalog_key" in item:
+        body["catalog_key"] = item["catalog_key"]
+    body.update(overrides)
+    return body
+
+
+def _create_platform_exercise(client: TestClient, name: str, catalog_key: str, **extra: object):
+    payload = {
+        "exercise_name": name,
+        "equipment": "none",
+        "is_cardio": False,
+        "is_hold": False,
+        "difficulty": 2,
+        "workout_category": "full_body",
+        "catalog_key": catalog_key,
+        "default_sets": 3,
+        "default_reps": 10,
+        "default_rest_seconds": 60,
+    }
+    payload.update(extra)
+    created = client.post("/api/v1/admin/platform-exercises", json=payload, headers=_ADMIN_HEADERS)
+    assert created.status_code == 201, created.text
+    return created.json()
+
+
+def test_catalog_sync_preview_and_selective_apply() -> None:
+    trainer_user_id = "trainer_soft_sync"
+    storage = _ObjectStorage()
+    with _client() as client:
+        _install_test_stubs()
+        _use_storage(storage)
+        _auth_as_platform_admin()
+
+        press = _create_platform_exercise(
+            client,
+            "Sync Press",
+            "sync_press",
+            description="Platform press",
+            primary_muscles=["chest"],
+            secondary_muscles=["triceps"],
+        )
+        press_id = press["row_id"]
+        original = client.post(
+            f"/api/v1/admin/platform-exercises/{press_id}/photos/start",
+            headers=_ADMIN_HEADERS,
+            files={"file": ("start.jpg", _JPEG, "image/jpeg")},
+        )
+        assert original.status_code == 200
+        original_platform_key = _signed_object_key(original.json()["image_url"])
+
+        described = _create_platform_exercise(client, "Sync Description Only", "sync_description_only")
+        described_id = described["row_id"]
+
+        listed = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=_catalog(trainer_user_id),
+        )
+        assert listed.status_code == 200
+        cloned = next(item for item in listed.json() if item["exercise_name"] == "Sync Press")
+        cloned_key = _signed_object_key(cloned["start_image_url"])
+        assert cloned_key != original_platform_key
+        assert storage.objects[cloned_key] == storage.objects[original_platform_key] == _JPEG
+
+        session = app.state.plan_handler._runtime._db_manager.create_session()
+        try:
+            stored = session.get(TrainerExerciseModel, cloned["row_id"])
+            assert stored is not None
+            assert stored.source_platform_exercise_id == press_id
+            assert stored.synced_start_image_key == original_platform_key
+            assert stored.start_image_url == cloned_key
+        finally:
+            session.close()
+
+        renamed = client.put(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/{cloned['row_id']}",
+            headers=_catalog(trainer_user_id),
+            json=_exercise_write_body(
+                cloned,
+                exercise_name="Sync Press Custom",
+                description="Trainer cue",
+                default_sets=5,
+            ),
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["primary_muscles"] == ["chest"]
+
+        preview = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync-preview",
+            headers=_catalog(trainer_user_id),
+        )
+        assert preview.status_code == 200
+        body = preview.json()
+        platform_total = len(client.get("/api/v1/platform-exercises").json())
+        summary = body["summary"]
+        assert summary["new_count"] == len(body["add"]) == 0
+        assert summary["media_update_count"] == len(body["update"]) == 0
+        assert summary["unchanged_count"] == platform_total
+        assert press_id not in {item["platform_exercise_id"] for item in body["add"]}
+
+        added_one = _create_platform_exercise(
+            client,
+            "Sync Added One",
+            "sync_added_one",
+            primary_muscles=["quadriceps"],
+            secondary_muscles=["glutes"],
+        )
+        added_one_id = added_one["row_id"]
+        added_photo = client.post(
+            f"/api/v1/admin/platform-exercises/{added_one_id}/photos/start",
+            headers=_ADMIN_HEADERS,
+            files={"file": ("start.jpg", _JPEG + b"one", "image/jpeg")},
+        )
+        assert added_photo.status_code == 200
+        added_two = _create_platform_exercise(client, "Sync Added Two", "sync_added_two")
+        added_two_id = added_two["row_id"]
+
+        replaced_start = client.post(
+            f"/api/v1/admin/platform-exercises/{press_id}/photos/start",
+            headers=_ADMIN_HEADERS,
+            files={"file": ("start.jpg", _JPEG + b"v2", "image/jpeg")},
+        )
+        assert replaced_start.status_code == 200
+        current_platform_key = _signed_object_key(replaced_start.json()["image_url"])
+        replaced_end = client.post(
+            f"/api/v1/admin/platform-exercises/{press_id}/photos/end",
+            headers=_ADMIN_HEADERS,
+            files={"file": ("end.png", _PNG, "image/png")},
+        )
+        assert replaced_end.status_code == 200
+        _auth_as_platform_admin()
+        described_detail = client.get(f"/api/v1/platform-exercises/{described_id}")
+        assert described_detail.status_code == 200
+        described_put = client.put(
+            f"/api/v1/admin/platform-exercises/{described_id}",
+            headers=_ADMIN_HEADERS,
+            json=_exercise_write_body(described_detail.json(), description="Only the text changed"),
+        )
+        assert described_put.status_code == 200
+
+        preview = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync-preview",
+            headers=_catalog(trainer_user_id),
+        )
+        assert preview.status_code == 200
+        body = preview.json()
+        summary = body["summary"]
+        platform_total = len(client.get("/api/v1/platform-exercises").json())
+        assert summary["new_count"] + summary["media_update_count"] + summary["unchanged_count"] == platform_total
+        add_ids = {item["platform_exercise_id"] for item in body["add"]}
+        assert add_ids == {added_one_id, added_two_id}
+        added_one_card = next(item for item in body["add"] if item["platform_exercise_id"] == added_one_id)
+        assert added_one_card["exercise_name"] == "Sync Added One"
+        assert added_one_card["primary_muscles"] == ["quadriceps"]
+        assert added_one_card["secondary_muscles"] == ["glutes"]
+        assert "signature=" in added_one_card["start_image_url"]
+        assert next(item for item in body["add"] if item["platform_exercise_id"] == added_two_id)["start_image_url"] is None
+        assert [item["platform_exercise_id"] for item in body["update"]] == [press_id]
+        press_update = body["update"][0]
+        assert press_update["changed_fields"] == ["start_image_url", "end_image_url"]
+        assert press_update["trainer_exercise_id"] == cloned["row_id"]
+        assert press_update["trainer"]["exercise_name"] == "Sync Press Custom"
+        assert press_update["trainer"]["description"] == "Trainer cue"
+        assert press_update["platform"]["exercise_name"] == "Sync Press"
+        assert press_update["platform"]["description"] == "Platform press"
+        assert _signed_object_key(press_update["platform"]["start_image_url"]) == current_platform_key
+        assert described_id not in add_ids
+        assert described_id not in {item["platform_exercise_id"] for item in body["update"]}
+
+        missing = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync",
+            headers=_catalog(trainer_user_id),
+            json={"add_ids": ["does-not-exist"], "update_ids": [], "include_media": False},
+        )
+        assert missing.status_code == 422
+        media_required = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync",
+            headers=_catalog(trainer_user_id),
+            json={"add_ids": [], "update_ids": [press_id], "include_media": False},
+        )
+        assert media_required.status_code == 422
+
+        deleted_before = set(storage.deleted)
+        applied = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync",
+            headers=_catalog(trainer_user_id),
+            json={"add_ids": [added_two_id], "update_ids": [press_id], "include_media": True},
+        )
+        assert applied.status_code == 200, applied.text
+        assert applied.json()["added_ids"] == [added_two_id]
+        assert applied.json()["updated_ids"] == [press_id]
+        assert applied.json()["added_count"] == 1
+        assert applied.json()["updated_count"] == 1
+
+        listed = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=_catalog(trainer_user_id),
+        )
+        names = [item["exercise_name"] for item in listed.json()]
+        assert names.count("Sync Added Two") == 1
+        assert "Sync Added One" not in names
+        custom = next(item for item in listed.json() if item["row_id"] == cloned["row_id"])
+        assert custom["exercise_name"] == "Sync Press Custom"
+        assert custom["description"] == "Trainer cue"
+        assert custom["default_sets"] == 5
+        assert custom["primary_muscles"] == ["chest"]
+        assert custom["secondary_muscles"] == ["triceps"]
+        assert storage.objects[_signed_object_key(custom["start_image_url"])] == _JPEG + b"v2"
+        assert storage.objects[_signed_object_key(custom["end_image_url"])] == _PNG
+        assert cloned_key in storage.deleted
+        assert cloned_key not in deleted_before
+        assert current_platform_key not in storage.deleted
+        assert current_platform_key in storage.objects
+        added_two_row = next(item for item in listed.json() if item["exercise_name"] == "Sync Added Two")
+        assert added_two_row["start_image_url"] is None
+
+        again = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync",
+            headers=_catalog(trainer_user_id),
+            json={"add_ids": [added_two_id], "update_ids": [press_id], "include_media": True},
+        )
+        assert again.status_code == 200
+        assert again.json()["added_ids"] == []
+        assert again.json()["updated_ids"] == []
+        listed = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=_catalog(trainer_user_id),
+        )
+        assert [item["exercise_name"] for item in listed.json()].count("Sync Added Two") == 1
+
+        without_media = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync",
+            headers=_catalog(trainer_user_id),
+            json={"add_ids": [added_one_id], "update_ids": [], "include_media": False},
+        )
+        assert without_media.status_code == 200
+        assert without_media.json()["added_ids"] == [added_one_id]
+        listed = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=_catalog(trainer_user_id),
+        )
+        added_one_row = next(item for item in listed.json() if item["exercise_name"] == "Sync Added One")
+        assert added_one_row["start_image_url"] is None
+        assert added_one_row["primary_muscles"] == ["quadriceps"]
+
+        preview = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync-preview",
+            headers=_catalog(trainer_user_id),
+        )
+        assert [item["platform_exercise_id"] for item in preview.json()["add"]] == []
+        assert [item["platform_exercise_id"] for item in preview.json()["update"]] == [added_one_id]
+        media_apply = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync",
+            headers=_catalog(trainer_user_id),
+            json={"add_ids": [added_one_id], "update_ids": [added_one_id], "include_media": True},
+        )
+        assert media_apply.status_code == 422
+        media_apply = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync",
+            headers=_catalog(trainer_user_id),
+            json={"add_ids": [], "update_ids": [added_one_id], "include_media": True},
+        )
+        assert media_apply.status_code == 200
+        assert media_apply.json()["updated_ids"] == [added_one_id]
+        listed = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=_catalog(trainer_user_id),
+        )
+        rows = [item for item in listed.json() if item["exercise_name"] == "Sync Added One"]
+        assert len(rows) == 1
+        assert storage.objects[_signed_object_key(rows[0]["start_image_url"])] == _JPEG + b"one"
+        duplicate = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync",
+            headers=_catalog(trainer_user_id),
+            json={"add_ids": [added_one_id], "update_ids": [], "include_media": True},
+        )
+        assert duplicate.status_code == 200
+        assert duplicate.json()["added_ids"] == []
+        listed = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=_catalog(trainer_user_id),
+        )
+        assert [item["exercise_name"] for item in listed.json()].count("Sync Added One") == 1
+        _clear_storage()
+
+
+def test_catalog_sync_name_fallback_does_not_duplicate_and_records_link() -> None:
+    trainer_user_id = "trainer_soft_sync_legacy"
+    with _client() as client:
+        _install_test_stubs()
+        _auth_as_platform_admin()
+        listed = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=_catalog(trainer_user_id),
+        )
+        assert listed.status_code == 200
+        created = _create_platform_exercise(client, "Sync Legacy Alias", "sync_legacy_alias")
+        platform_id = created["row_id"]
+        session = app.state.plan_handler._runtime._db_manager.create_session()
+        try:
+            session.add(
+                TrainerExerciseModel(
+                    row_id="legacy-sync-alias",
+                    trainer_user_id=trainer_user_id,
+                    exercise_name="  sync   legacy alias ",
+                    equipment="none",
+                    is_cardio=False,
+                    difficulty=1,
+                    workout_category="full_body",
+                    is_hold=False,
+                    default_sets=3,
+                    default_reps=8,
+                    default_rest_seconds=60,
+                    is_active=True,
+                )
+            )
+            session.commit()
+        finally:
+            session.close()
+
+        preview = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync-preview",
+            headers=_catalog(trainer_user_id),
+        )
+        assert preview.status_code == 200
+        assert platform_id not in {item["platform_exercise_id"] for item in preview.json()["add"]}
+        assert platform_id not in {item["platform_exercise_id"] for item in preview.json()["update"]}
+
+        applied = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync",
+            headers=_catalog(trainer_user_id),
+            json={"add_ids": [platform_id], "update_ids": [], "include_media": False},
+        )
+        assert applied.status_code == 200
+        assert applied.json()["added_ids"] == []
+        session = app.state.plan_handler._runtime._db_manager.create_session()
+        try:
+            stored = session.get(TrainerExerciseModel, "legacy-sync-alias")
+            assert stored is not None
+            assert stored.source_platform_exercise_id == platform_id
+            stored.exercise_name = "Renamed legacy alias"
+            session.commit()
+        finally:
+            session.close()
+
+        preview = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync-preview",
+            headers=_catalog(trainer_user_id),
+        )
+        assert platform_id not in {item["platform_exercise_id"] for item in preview.json()["add"]}
+        listed = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=_catalog(trainer_user_id),
+        )
+        assert [item["exercise_name"] for item in listed.json()].count("Renamed legacy alias") == 1
+        assert [item["exercise_name"] for item in listed.json()].count("Sync Legacy Alias") == 0
+
+
+def test_catalog_sync_forbidden_for_another_user() -> None:
+    trainer_user_id = "trainer_soft_sync_auth"
+    with _client() as client:
+        _install_test_stubs()
+        missing = client.get(f"/api/v1/trainers/{trainer_user_id}/exercises/sync-preview")
+        assert missing.status_code == 401
+        preview = client.get(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync-preview",
+            headers=_auth("trainer_soft_sync_other", role="trainer"),
+        )
+        assert preview.status_code == 403
+        applied = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises/sync",
+            headers=_auth("trainer_soft_sync_other", role="trainer"),
+            json={"add_ids": [], "update_ids": [], "include_media": False},
+        )
+        assert applied.status_code == 403
