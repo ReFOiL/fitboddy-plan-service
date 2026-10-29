@@ -289,6 +289,12 @@ class CatalogSyncUpdateItem(BaseModel):
     platform: CatalogSyncExerciseCard
 
 
+class CatalogSyncSkipItem(BaseModel):
+    platform_exercise_id: str
+    trainer_exercise_id: str
+    exercise_name: str
+
+
 class CatalogSyncSummary(BaseModel):
     new_count: int
     media_update_count: int
@@ -299,6 +305,7 @@ class CatalogSyncPreviewResponse(BaseModel):
     summary: CatalogSyncSummary
     add: list[CatalogSyncAddItem] = Field(default_factory=list)
     update: list[CatalogSyncUpdateItem] = Field(default_factory=list)
+    unchanged: list[CatalogSyncSkipItem] = Field(default_factory=list)
 
 
 class ApplyCatalogSyncRequest(BaseModel):

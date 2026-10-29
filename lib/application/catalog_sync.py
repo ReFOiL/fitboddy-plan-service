@@ -97,6 +97,13 @@ class CatalogSyncUpdate:
 
 
 @dataclass(frozen=True)
+class CatalogSyncSkip:
+    platform_exercise_id: str
+    trainer_exercise_id: str
+    exercise_name: str
+
+
+@dataclass(frozen=True)
 class CatalogLink:
     platform_exercise_id: str
     trainer_exercise_id: str
@@ -108,8 +115,12 @@ class CatalogLink:
 class CatalogSyncPlan:
     add: tuple[CatalogSyncAdd, ...]
     update: tuple[CatalogSyncUpdate, ...]
-    unchanged_count: int
+    unchanged: tuple[CatalogSyncSkip, ...]
     links: tuple[CatalogLink, ...]
+
+    @property
+    def unchanged_count(self) -> int:
+        return len(self.unchanged)
 
     @property
     def new_count(self) -> int:
@@ -184,7 +195,7 @@ def match_catalog(
     adds: list[CatalogSyncAdd] = []
     updates: list[CatalogSyncUpdate] = []
     links: list[CatalogLink] = []
-    unchanged = 0
+    unchanged: list[CatalogSyncSkip] = []
     ordered = sorted(platform_rows, key=lambda row: (normalize_match_name(row.exercise_name), row.row_id))
     for platform in ordered:
         trainer = trainer_by_source.get(platform.row_id) or name_matches.get(platform.row_id)
@@ -222,12 +233,18 @@ def match_catalog(
                 )
             )
         else:
-            unchanged += 1
+            unchanged.append(
+                CatalogSyncSkip(
+                    platform_exercise_id=platform.row_id,
+                    trainer_exercise_id=trainer.row_id,
+                    exercise_name=trainer.exercise_name,
+                )
+            )
 
     return CatalogSyncPlan(
         add=tuple(adds),
         update=tuple(updates),
-        unchanged_count=unchanged,
+        unchanged=tuple(unchanged),
         links=tuple(links),
     )
 

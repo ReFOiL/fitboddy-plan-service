@@ -2358,6 +2358,8 @@ def test_catalog_sync_preview_and_selective_apply() -> None:
         assert summary["new_count"] == len(body["add"]) == 0
         assert summary["media_update_count"] == len(body["update"]) == 0
         assert summary["unchanged_count"] == platform_total
+        assert len(body["unchanged"]) == summary["unchanged_count"]
+        assert all(item["exercise_name"] for item in body["unchanged"])
         assert press_id not in {item["platform_exercise_id"] for item in body["add"]}
 
         added_one = _create_platform_exercise(
