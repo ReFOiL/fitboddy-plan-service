@@ -9,14 +9,24 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from application.catalog_sync import (
+    MEDIA_SLOTS,
+    CatalogSyncApplyResult,
+    CatalogSyncPlan,
+    SyncPlatformRow,
+    SyncTrainerRow,
+    match_catalog,
+)
 from application.generation import GenerationOrchestrator, PlanGenerationInput, SeedCatalogProvider
 from application.generation.policy import GenerationPolicyConfig
 from application.gateways import ProfileGateway
 from application.commands import (
     AddPlatformExerciseCommand,
     AddTrainerExerciseCommand,
+    ApplyCatalogSyncCommand,
     ArchivePlatformExerciseCommand,
     ArchiveTrainerExerciseCommand,
+    PreviewCatalogSyncCommand,
     RestoreTrainerExerciseCommand,
     AddPlanDayCommand,
     AddPlanSlotCommand,
@@ -94,6 +104,7 @@ from domain.equipment import (
 from domain.value_objects import TrainingGoal, TrainingLevel, WorkoutLocation
 
 _ALLOWED_LOAD_SCHEMES = {"flat", "ascending", "descending", "custom"}
+_MAX_SYNC_IDS = 500
 logger = logging.getLogger(__name__)
 
 
@@ -839,6 +850,159 @@ class PlanService:
             include_archived=command.include_archived,
         )
         return [self._mapper.trainer_exercise_to_domain(item) for item in rows]
+
+    def preview_catalog_sync(self, command: PreviewCatalogSyncCommand) -> CatalogSyncPlan:
+        platform_rows, trainer_rows = self._load_catalog_sync_rows(command.trainer_user_id)
+        return match_catalog(
+            [_platform_snapshot(row) for row in platform_rows],
+            [_trainer_snapshot(row) for row in trainer_rows],
+        )
+
+    def apply_catalog_sync(self, command: ApplyCatalogSyncCommand) -> CatalogSyncApplyResult:
+        add_ids = _clean_sync_ids(command.add_ids)
+        update_ids = _clean_sync_ids(command.update_ids)
+        if len(add_ids) > _MAX_SYNC_IDS or len(update_ids) > _MAX_SYNC_IDS:
+            raise ValidationError("at most 500 exercises can be synced at once")
+        if set(add_ids) & set(update_ids):
+            raise ValidationError("an exercise cannot be both added and updated")
+        if update_ids and not command.include_media:
+            raise ValidationError("include_media is required to apply media updates")
+
+        platform_rows, trainer_rows = self._load_catalog_sync_rows(command.trainer_user_id)
+        plan = match_catalog(
+            [_platform_snapshot(row) for row in platform_rows],
+            [_trainer_snapshot(row) for row in trainer_rows],
+        )
+        platform_by_id = {row.row_id: row for row in platform_rows}
+        links = {link.platform_exercise_id: link for link in plan.links}
+        add_set = {item.platform_exercise_id for item in plan.add}
+        update_set = {item.platform_exercise_id for item in plan.update}
+        self._validate_catalog_sync_selection(add_ids, update_ids, add_set, links, platform_by_id)
+
+        copied: list[str] = []
+        replaced: list[str] = []
+        added: list[str] = []
+        updated: list[str] = []
+
+        def _copy(source: str | None, row_id: str, slot: str) -> str | None:
+            before = normalize_stored_media(source)
+            stored = copy_or_share(
+                self._media_storage,
+                source,
+                owner_id=command.trainer_user_id,
+                row_id=row_id,
+                slot=slot,
+            )
+            if stored and before and stored != before:
+                copied.append(stored)
+            return stored
+
+        try:
+            for platform_id in add_ids:
+                if platform_id in add_set:
+                    self._trainer_exercises.clone_one(
+                        command.trainer_user_id,
+                        platform_by_id[platform_id],
+                        copy_media=_copy,
+                        include_media=command.include_media,
+                    )
+                    added.append(platform_id)
+                    continue
+                self._stamp_catalog_link(command.trainer_user_id, links[platform_id].trainer_exercise_id, platform_id)
+            for platform_id in update_ids:
+                link = links[platform_id]
+                if platform_id not in update_set:
+                    self._stamp_catalog_link(command.trainer_user_id, link.trainer_exercise_id, platform_id)
+                    continue
+                if self._copy_changed_platform_media(
+                    command.trainer_user_id,
+                    link.trainer_exercise_id,
+                    platform_by_id[platform_id],
+                    _copy,
+                    replaced,
+                ):
+                    updated.append(platform_id)
+            self._session.commit()
+        except IntegrityError as exc:
+            self._session.rollback()
+            self._discard_copied_media(copied)
+            raise ConflictError("catalog sync conflicted with an existing exercise link") from exc
+        except Exception:
+            self._session.rollback()
+            self._discard_copied_media(copied)
+            raise
+        return CatalogSyncApplyResult(
+            added_ids=tuple(added),
+            updated_ids=tuple(updated),
+            replaced_media_keys=tuple(replaced),
+        )
+
+    def _load_catalog_sync_rows(self, trainer_user_id: str):
+        inserted = not self._platform_exercises.list_all(include_archived=True)
+        self._ensure_platform_catalog_baseline()
+        if inserted:
+            self._session.commit()
+        platform_rows = self._platform_exercises.list_all(include_archived=False)
+        trainer_rows = self._trainer_exercises.list_by_trainer(trainer_user_id, include_archived=True)
+        return platform_rows, trainer_rows
+
+    @staticmethod
+    def _validate_catalog_sync_selection(
+        add_ids: list[str],
+        update_ids: list[str],
+        add_set: set[str],
+        links: dict,
+        platform_by_id: dict,
+    ) -> None:
+        for platform_id in add_ids:
+            if platform_id in add_set or platform_id in links:
+                continue
+            raise ValidationError(f"unknown platform exercise: {platform_id}")
+        for platform_id in update_ids:
+            link = links.get(platform_id)
+            if link is None:
+                if platform_id in platform_by_id:
+                    raise ValidationError(f"platform exercise is not in the trainer catalog: {platform_id}")
+                raise ValidationError(f"unknown platform exercise: {platform_id}")
+            if not link.trainer_is_active:
+                raise ValidationError(f"archived trainer exercise cannot be media-updated: {platform_id}")
+
+    def _stamp_catalog_link(self, trainer_user_id: str, trainer_exercise_id: str, platform_id: str) -> None:
+        model = self._trainer_exercises.lock_for_media_update(trainer_user_id, trainer_exercise_id)
+        if model is None:
+            raise TrainerExerciseNotFoundError("trainer exercise not found")
+        if model.source_platform_exercise_id is None:
+            model.source_platform_exercise_id = platform_id
+
+    def _copy_changed_platform_media(
+        self,
+        trainer_user_id: str,
+        trainer_exercise_id: str,
+        platform: PlatformExerciseModel,
+        copy_media,
+        replaced: list[str],
+    ) -> bool:
+        model = self._trainer_exercises.lock_for_media_update(trainer_user_id, trainer_exercise_id)
+        if model is None:
+            raise TrainerExerciseNotFoundError("trainer exercise not found")
+        changed = False
+        for field, synced_field, slot in MEDIA_SLOTS:
+            platform_key = normalize_stored_media(getattr(platform, field))
+            synced_key = normalize_stored_media(getattr(model, synced_field))
+            if platform_key is None or platform_key == synced_key:
+                continue
+            new_value = copy_media(getattr(platform, field), model.row_id, slot)
+            previous = getattr(model, field)
+            previous_key = normalize_stored_media(previous)
+            new_key = normalize_stored_media(new_value)
+            if previous_key and previous_key != new_key:
+                replaced.append(previous)
+            setattr(model, field, new_value)
+            setattr(model, synced_field, platform_key)
+            changed = True
+        if model.source_platform_exercise_id is None:
+            model.source_platform_exercise_id = platform.row_id
+        return changed
 
     def list_client_loads(self, command: ListClientLoadsCommand) -> list[ClientExerciseLoad]:
         rows = self._client_loads.list_for_client_trainer(command.client_user_id, command.trainer_user_id)
@@ -1905,6 +2069,60 @@ class PlanService:
                 storage.delete_media_sync(key)
             except Exception:
                 logger.exception("failed to delete media copied during a rolled-back clone key=%s", key)
+
+
+def _muscle_lists(model: TrainerExerciseModel | PlatformExerciseModel) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    primary, secondary = PlanMapper._muscle_lists_from_links(list(model.muscle_links or []))
+    return tuple(primary), tuple(secondary)
+
+
+def _platform_snapshot(model: PlatformExerciseModel) -> SyncPlatformRow:
+    primary, secondary = _muscle_lists(model)
+    return SyncPlatformRow(
+        row_id=model.row_id,
+        exercise_name=model.exercise_name,
+        description=model.description,
+        primary_muscles=primary,
+        secondary_muscles=secondary,
+        video_key=normalize_stored_media(model.video_url),
+        start_image_key=normalize_stored_media(model.start_image_url),
+        end_image_key=normalize_stored_media(model.end_image_url),
+    )
+
+
+def _trainer_snapshot(model: TrainerExerciseModel) -> SyncTrainerRow:
+    primary, secondary = _muscle_lists(model)
+    return SyncTrainerRow(
+        row_id=model.row_id,
+        exercise_name=model.exercise_name,
+        description=model.description,
+        primary_muscles=primary,
+        secondary_muscles=secondary,
+        video_key=normalize_stored_media(model.video_url),
+        start_image_key=normalize_stored_media(model.start_image_url),
+        end_image_key=normalize_stored_media(model.end_image_url),
+        is_active=bool(model.is_active),
+        source_platform_exercise_id=model.source_platform_exercise_id,
+        synced_video_key=normalize_stored_media(model.synced_video_key),
+        synced_start_image_key=normalize_stored_media(model.synced_start_image_key),
+        synced_end_image_key=normalize_stored_media(model.synced_end_image_key),
+    )
+
+
+def _clean_sync_ids(raw_ids: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_ids:
+        item = raw.strip()
+        if not item:
+            raise ValidationError("exercise id must not be blank")
+        if len(item) > 36:
+            raise ValidationError("exercise id must be at most 36 characters")
+        if item in seen:
+            continue
+        seen.add(item)
+        cleaned.append(item)
+    return cleaned
 
 
 def _detach_media_keys(model: TrainerExerciseModel | PlatformExerciseModel) -> list[str]:

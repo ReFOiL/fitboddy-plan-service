@@ -86,46 +86,65 @@ class TrainerExerciseRepository:
 
         Медиа копируется в префикс тренера, если передан ``copy_media``.
         Иначе в строку попадает нормализованный ключ исходного объекта.
+        Каждая строка хранит ``source_platform_exercise_id`` и ключи медиа,
+        с которых снята копия, чтобы мягкая синхронизация не путала копию с правкой.
         """
         existing = self.list_by_trainer(trainer_user_id, include_archived=True)
         if existing:
             return self.list_by_trainer(trainer_user_id)
 
-        def _stored(value: str | None, row_id: str, slot: str) -> str | None:
-            if copy_media is not None:
-                return copy_media(value, row_id, slot)
-            return normalize_stored_media(value)
-
         for item in platform_rows:
-            trainer_row_id = str(uuid4())
-            self._session.add(
-                TrainerExerciseModel(
-                    row_id=trainer_row_id,
-                    trainer_user_id=trainer_user_id,
-                    exercise_name=item.exercise_name,
-                    description=item.description,
-                    equipment=item.equipment,
-                    is_cardio=item.is_cardio,
-                    difficulty=item.difficulty,
-                    workout_category=item.workout_category,
-                    is_hold=item.is_hold,
-                    default_sets=item.default_sets,
-                    default_reps=item.default_reps,
-                    default_duration_seconds=item.default_duration_seconds,
-                    default_rest_seconds=item.default_rest_seconds,
-                    default_weight_kg=item.default_weight_kg,
-                    load_scheme=item.load_scheme or "flat",
-                    scheme_steps_json=item.scheme_steps_json,
-                    video_url=_stored(item.video_url, trainer_row_id, "video"),
-                    start_image_url=_stored(item.start_image_url, trainer_row_id, "start"),
-                    end_image_url=_stored(item.end_image_url, trainer_row_id, "end"),
-                    is_active=True,
-                )
-            )
-            self._session.flush()
-            self._muscles.copy_platform_muscles_to_trainer(
-                platform_exercise_id=item.row_id,
-                trainer_exercise_id=trainer_row_id,
-            )
+            self.clone_one(trainer_user_id, item, copy_media=copy_media, include_media=True)
         self._session.flush()
         return self.list_by_trainer(trainer_user_id)
+
+    def clone_one(
+        self,
+        trainer_user_id: str,
+        item: PlatformExerciseModel,
+        *,
+        copy_media: MediaCopier | None = None,
+        include_media: bool,
+    ) -> TrainerExerciseModel:
+        trainer_row_id = str(uuid4())
+
+        def _stored(value: str | None, slot: str) -> str | None:
+            if not include_media:
+                return None
+            if copy_media is not None:
+                return copy_media(value, trainer_row_id, slot)
+            return normalize_stored_media(value)
+
+        model = TrainerExerciseModel(
+            row_id=trainer_row_id,
+            trainer_user_id=trainer_user_id,
+            source_platform_exercise_id=item.row_id,
+            exercise_name=item.exercise_name,
+            description=item.description,
+            equipment=item.equipment,
+            is_cardio=item.is_cardio,
+            difficulty=item.difficulty,
+            workout_category=item.workout_category,
+            is_hold=item.is_hold,
+            default_sets=item.default_sets,
+            default_reps=item.default_reps,
+            default_duration_seconds=item.default_duration_seconds,
+            default_rest_seconds=item.default_rest_seconds,
+            default_weight_kg=item.default_weight_kg,
+            load_scheme=item.load_scheme or "flat",
+            scheme_steps_json=item.scheme_steps_json,
+            video_url=_stored(item.video_url, "video"),
+            start_image_url=_stored(item.start_image_url, "start"),
+            end_image_url=_stored(item.end_image_url, "end"),
+            synced_video_key=normalize_stored_media(item.video_url) if include_media else None,
+            synced_start_image_key=normalize_stored_media(item.start_image_url) if include_media else None,
+            synced_end_image_key=normalize_stored_media(item.end_image_url) if include_media else None,
+            is_active=True,
+        )
+        self._session.add(model)
+        self._session.flush()
+        self._muscles.copy_platform_muscles_to_trainer(
+            platform_exercise_id=item.row_id,
+            trainer_exercise_id=trainer_row_id,
+        )
+        return model

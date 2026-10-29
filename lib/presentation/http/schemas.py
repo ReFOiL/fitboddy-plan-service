@@ -257,6 +257,63 @@ class UpsertGenerationPolicyRequest(BaseModel):
     exercises_per_session: dict[str, SessionSizeBounds] = Field(default_factory=dict)
 
 
+CatalogSyncMediaField = Literal["video_url", "start_image_url", "end_image_url"]
+
+
+class CatalogSyncExerciseCard(BaseModel):
+    exercise_name: str
+    description: str | None = None
+    primary_muscles: list[str] = Field(default_factory=list)
+    secondary_muscles: list[str] = Field(default_factory=list)
+    video_url: str | None = None
+    start_image_url: str | None = None
+    end_image_url: str | None = None
+
+
+class CatalogSyncAddItem(BaseModel):
+    platform_exercise_id: str
+    exercise_name: str
+    description: str | None = None
+    primary_muscles: list[str] = Field(default_factory=list)
+    secondary_muscles: list[str] = Field(default_factory=list)
+    video_url: str | None = None
+    start_image_url: str | None = None
+    end_image_url: str | None = None
+
+
+class CatalogSyncUpdateItem(BaseModel):
+    platform_exercise_id: str
+    trainer_exercise_id: str
+    changed_fields: list[CatalogSyncMediaField]
+    trainer: CatalogSyncExerciseCard
+    platform: CatalogSyncExerciseCard
+
+
+class CatalogSyncSummary(BaseModel):
+    new_count: int
+    media_update_count: int
+    unchanged_count: int
+
+
+class CatalogSyncPreviewResponse(BaseModel):
+    summary: CatalogSyncSummary
+    add: list[CatalogSyncAddItem] = Field(default_factory=list)
+    update: list[CatalogSyncUpdateItem] = Field(default_factory=list)
+
+
+class ApplyCatalogSyncRequest(BaseModel):
+    add_ids: list[str] = Field(default_factory=list, max_length=500)
+    update_ids: list[str] = Field(default_factory=list, max_length=500)
+    include_media: bool = False
+
+
+class ApplyCatalogSyncResponse(BaseModel):
+    added_count: int
+    updated_count: int
+    added_ids: list[str] = Field(default_factory=list)
+    updated_ids: list[str] = Field(default_factory=list)
+
+
 class TrainerExerciseResponse(BaseModel):
     row_id: str
     trainer_user_id: str

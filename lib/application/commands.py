@@ -181,6 +181,19 @@ class ListTrainerExercisesCommand:
 
 
 @dataclass(frozen=True)
+class PreviewCatalogSyncCommand:
+    trainer_user_id: str
+
+
+@dataclass(frozen=True)
+class ApplyCatalogSyncCommand:
+    trainer_user_id: str
+    add_ids: list[str]
+    update_ids: list[str]
+    include_media: bool
+
+
+@dataclass(frozen=True)
 class AddTrainerExerciseCommand:
     trainer_user_id: str
     exercise_name: str
