@@ -32,6 +32,7 @@ from presentation.http.schemas import (
     CatalogSyncAddItem,
     CatalogSyncExerciseCard,
     CatalogSyncPreviewResponse,
+    CatalogSyncSkipItem,
     CatalogSyncSummary,
     CatalogSyncUpdateItem,
     ClientExerciseLoadResponse,
@@ -1330,6 +1331,14 @@ class PlanHttpHandler:
             ),
             add=[self._catalog_sync_add_item(item) for item in plan.add],
             update=[self._catalog_sync_update_item(item) for item in plan.update],
+            unchanged=[
+                CatalogSyncSkipItem(
+                    platform_exercise_id=item.platform_exercise_id,
+                    trainer_exercise_id=item.trainer_exercise_id,
+                    exercise_name=item.exercise_name,
+                )
+                for item in plan.unchanged
+            ],
         )
 
     def _catalog_sync_add_item(self, item: CatalogSyncAdd) -> CatalogSyncAddItem:
