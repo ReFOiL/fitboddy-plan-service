@@ -18,8 +18,8 @@ from application.errors import ValidationError
 
 
 class PlanStartMode(StrEnum):
-    NEXT_SLOT = "next_slot"
-    NEXT_WEEK = "next_week"
+    NEXT_WORKOUT = "next_workout"
+    NEXT_MONDAY = "next_monday"
     DATE = "date"
 
     @classmethod
@@ -30,7 +30,7 @@ class PlanStartMode(StrEnum):
         for item in cls:
             if item.value == normalized:
                 return item
-        raise ValidationError("start_mode must be one of: next_slot, next_week, date")
+        raise ValidationError("start_mode must be next_workout, next_monday, or date")
 
 
 def next_calendar_week_monday(today: date) -> date:
@@ -64,15 +64,12 @@ def resolve_plan_start(
     match mode:
         case PlanStartMode.DATE:
             if explicit is None:
-                raise ValidationError("start_date is required when start_mode=date")
+                raise ValidationError("start_date is required when start_mode is date")
             return explicit
-        case PlanStartMode.NEXT_WEEK:
-            if explicit is not None:
-                raise ValidationError("start_date must be omitted unless start_mode=date")
+        case PlanStartMode.NEXT_MONDAY:
+            # Клиент может прислать уже посчитанную дату. Якорь всё равно считает сервер.
             return next_calendar_week_monday(today)
-        case PlanStartMode.NEXT_SLOT:
-            if explicit is not None:
-                raise ValidationError("start_date must be omitted unless start_mode=date")
+        case PlanStartMode.NEXT_WORKOUT:
             return next_training_day(today, weekdays)
         case _:
             assert_never(mode)

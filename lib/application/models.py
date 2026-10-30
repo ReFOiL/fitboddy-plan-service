@@ -61,7 +61,7 @@ class TrainingPlanModel(Base):
     workouts_per_week: Mapped[int] = mapped_column(Integer, nullable=False)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
-    # next_slot | next_week | date. NULL — прежнее окно в 7 дней от start_date.
+    # next_workout | next_monday | date. NULL — прежнее окно в 7 дней от start_date.
     start_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

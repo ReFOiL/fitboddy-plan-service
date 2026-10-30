@@ -53,17 +53,20 @@ def test_legacy_mode_never_hides_a_day() -> None:
     assert day_is_shown(None, _WEDNESDAY, 1, date(2026, 10, 19), False) is True
 
 
-def test_date_mode_requires_start_date_and_other_modes_reject_it() -> None:
+def test_date_mode_requires_start_date_and_other_modes_ignore_it() -> None:
     try:
         resolve_plan_start(PlanStartMode.DATE, None, _WEDNESDAY, _SLOTS)
     except ValidationError as exc:
-        assert "start_date is required" in str(exc)
+        assert str(exc) == "start_date is required when start_mode is date"
     else:
         raise AssertionError("expected validation error")
+    # Админка присылает start_date и для next_workout / next_monday. Сервер считает сам.
+    assert resolve_plan_start(PlanStartMode.NEXT_WORKOUT, date(2026, 1, 1), _SATURDAY, _SLOTS) == date(2026, 10, 26)
+    assert resolve_plan_start(PlanStartMode.NEXT_MONDAY, date(2026, 1, 1), _WEDNESDAY, _SLOTS) == date(2026, 10, 26)
     try:
-        resolve_plan_start(PlanStartMode.NEXT_SLOT, _WEDNESDAY, _WEDNESDAY, _SLOTS)
+        PlanStartMode.parse("next_slot")
     except ValidationError as exc:
-        assert "must be omitted" in str(exc)
+        assert str(exc) == "start_mode must be next_workout, next_monday, or date"
     else:
         raise AssertionError("expected validation error")
 

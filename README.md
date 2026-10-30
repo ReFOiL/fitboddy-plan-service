@@ -17,7 +17,7 @@
 - `GET /api/v1/plans/users/{user_id}/active` - получить активный план пользователя
 - `GET /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/active` - активный план клиента у этого тренера (клиент и его тренер, только чтение для клиента)
 - `POST /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/active` - пустой план тренера, если активного ещё нет (`day_count: 0` — план без дней)
-- `PATCH /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/active` - якорь старта календаря (`start_mode`: `next_slot`, `next_week`, `date`)
+- `PATCH /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/start` - якорь старта календаря (`start_mode`: `next_workout`, `next_monday`, `date`)
 - `PUT /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}` - заменить слоты дня упорядоченным списком (пустой список очищает день)
 - `POST /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}/exercises` - добавить слот в конец дня
 - `PATCH /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}/exercises/{line_id}` - обновить дозировку слота
@@ -217,25 +217,27 @@ POST .../weeks/1/copy
 
 Тренер выбирает, с какого дня клиент видит календарь плана. «Сегодня» — серверная дата, та же, что у `GET /api/v1/plans/me/today`: часового пояса профиля в сервисе нет. `day_of_week` по-прежнему понедельник = 0.
 
-`PATCH /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/active` (тренер клиента или `platform_admin`):
+`PATCH /api/v1/plans/clients/{client_user_id}/trainers/{trainer_user_id}/start` (тренер клиента или `platform_admin`). Тело, которое шлёт admin-frontend:
 
 ```json
-{ "start_mode": "next_slot" }
+{ "start_mode": "next_workout", "start_date": "2026-10-26" }
 ```
 
 ```json
-{ "start_mode": "next_week" }
+{ "start_mode": "next_monday", "start_date": "2026-11-02" }
 ```
 
 ```json
 { "start_mode": "date", "start_date": "2026-11-04" }
 ```
 
-- `next_slot` — ближайший день тренировки сегодня или позже, чей `day_of_week` уже есть в плане. Клиент сохраняет план в субботу, слоты пн/ср/пт → старт в ближайший понедельник. Пока нет завершённых тренировок, добавление и удаление дня пересчитывает этот якорь.
-- `next_week` — понедельник следующей календарной недели. Если сегодня понедельник, это через 7 дней.
-- `date` — явная дата. `start_date` обязателен только в этом режиме; в двух других его передавать нельзя.
+`start_date` в теле может быть `null`. Обязателен он только для `date` (`start_date is required when start_mode is date`). Для `next_workout` и `next_monday` сервер сам считает якорь и присланную дату не использует. Неизвестный режим — `start_mode must be next_workout, next_monday, or date`. Ответ — активный план.
 
-Те же поля принимают `POST .../active` и `POST /api/v1/plans/generate`. У генерации слотов ещё нет, поэтому `next_slot` там совпадает с сегодня, а первая тренировка ставится на якорь, как и раньше.
+- `next_workout` — ближайшая дата сегодня или позже, чей день недели есть среди `day_of_week` плана. Суббота и слоты пн/ср/пт → ближайший понедельник. Если слотов ещё нет, `start_date` не двигается. Пока нет завершённых тренировок, добавление и удаление дня пересчитывает этот якорь.
+- `next_monday` — понедельник следующей календарной недели. Если сегодня понедельник, это через 7 дней.
+- `date` — явная `start_date`.
+
+Те же `start_mode` принимают `POST .../active` и `POST /api/v1/plans/generate`. У генерации слотов ещё нет, поэтому `next_workout` там совпадает с сегодня, а первая тренировка ставится на якорь, как и раньше.
 
 С режимом неделя календарная: неделя 1 начинается в понедельник той недели, куда попал `start_date`. День первой недели с датой раньше якоря остаётся в ответе с `shown: false`. Его не показывают и не считают пропуском: он не входит в adherence, `GET /plans/me/today` его не отдаёт, завершить его нельзя. `day_index` при смене якоря не перенумеровывается. Уже завершённая тренировка сохраняет и `day_index`, и `scheduled_for`.
 

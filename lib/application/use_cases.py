@@ -209,7 +209,7 @@ class PlanService:
         # Replace/rebuild starts today unless the caller sets a date or a start mode.
         # Do not wait for previous plan end_date — that pushed first workouts weeks ahead
         # when the old cycle itself started in the future.
-        # У генерации слотов ещё нет: next_slot совпадает с сегодня, генератор ставит первую тренировку на якорь.
+        # У генерации слотов ещё нет: next_workout совпадает с сегодня, генератор ставит первую тренировку на якорь.
         start_mode = PlanStartMode.parse(command.start_mode)
         if start_mode is None:
             start_date = command.start_date if command.start_date is not None else date.today()
@@ -378,7 +378,7 @@ class PlanService:
         if start_mode is None:
             start = command.start_date if command.start_date is not None else date.today()
         else:
-            # Дней ещё нет, поэтому next_slot здесь равен сегодня. Слоты пересчитают якорь сами.
+            # Дней ещё нет, поэтому next_workout здесь равен сегодня. Слоты пересчитают якорь сами.
             start = resolve_plan_start(start_mode, command.start_date, date.today(), set())
         end = start if command.day_count == 0 else start + timedelta(days=command.day_count - 1)
         plan_id = str(uuid4())
@@ -576,9 +576,16 @@ class PlanService:
         plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
         mode = PlanStartMode.parse(command.start_mode)
         if mode is None:
-            raise ValidationError("start_mode is required")
+            raise ValidationError("start_mode must be next_workout, next_monday, or date")
         # Якорь считаем от серверного «сегодня», тем же календарём, что и тренировка на сегодня.
-        anchor = resolve_plan_start(mode, command.start_date, date.today(), self._slot_weekdays(plan.plan_id))
+        # Присланный start_date используем только для mode=date: остальные режимы клиент может
+        # продублировать, но источник истины — день недели слотов и календарь сервера.
+        weekdays = self._slot_weekdays(plan.plan_id)
+        if mode is PlanStartMode.NEXT_WORKOUT and not weekdays:
+            plan.start_mode = mode.value
+            self._refresh_plan_end_date(plan)
+            return self._commit_plan(plan)
+        anchor = resolve_plan_start(mode, command.start_date, date.today(), weekdays)
         plan.start_mode = mode.value
         plan.start_date = anchor
         # day_index не трогаем. Завершённые дни остаются на своих датах.
@@ -1694,15 +1701,15 @@ class PlanService:
         for day, new_date in placed:
             day.scheduled_for = new_date
 
-    def _refresh_next_slot_anchor(self, plan: TrainingPlanModel) -> None:
-        # Пока никто не завершил тренировку, next_slot следует за текущим набором слотов.
+    def _refresh_next_workout_anchor(self, plan: TrainingPlanModel) -> None:
+        # Пока никто не завершил тренировку, next_workout следует за текущим набором слотов.
         # Завершённый day_index и его дату задним числом не переписываем.
-        if plan.start_mode != PlanStartMode.NEXT_SLOT.value:
+        if plan.start_mode != PlanStartMode.NEXT_WORKOUT.value:
             return
         if self._has_completed_day(plan.plan_id):
             return
         plan.start_date = resolve_plan_start(
-            PlanStartMode.NEXT_SLOT,
+            PlanStartMode.NEXT_WORKOUT,
             None,
             date.today(),
             self._slot_weekdays(plan.plan_id),
@@ -1710,7 +1717,7 @@ class PlanService:
         self._place_open_days(plan)
 
     def _finish_structure_edit(self, plan: TrainingPlanModel) -> TrainingPlan:
-        self._refresh_next_slot_anchor(plan)
+        self._refresh_next_workout_anchor(plan)
         self._refresh_plan_end_date(plan)
         return self._commit_plan(plan)
 

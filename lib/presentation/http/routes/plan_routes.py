@@ -70,7 +70,7 @@ class PlanRoutes:
             response_model=TrainingPlanResponse,
         )
         self.router.add_api_route(
-            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/active",
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/start",
             self.update_plan_start,
             methods=["PATCH"],
             response_model=TrainingPlanResponse,

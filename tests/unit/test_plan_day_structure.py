@@ -508,11 +508,11 @@ def test_trainer_start_anchor_hides_leading_week_and_keeps_completed_day() -> No
                     "level": "intermediate",
                     "workouts_per_week": 3,
                     "day_count": 0,
-                    "start_mode": "next_slot",
+                    "start_date": "2026-10-21",
                 },
             )
             assert created.status_code == 201, created.text
-            assert created.json()["start_mode"] == "next_slot"
+            assert created.json()["start_mode"] is None
             assert created.json()["start_date"] == "2026-10-21"
             headers = _headers(trainer_user_id)
             plan = created.json()
@@ -525,6 +525,14 @@ def test_trainer_start_anchor_hides_leading_week_and_keeps_completed_day() -> No
                 assert added.status_code == 201, added.text
                 plan = added.json()
 
+            issued = client.patch(
+                f"{base}/start",
+                headers=headers,
+                json={"start_mode": "next_workout", "start_date": "2026-10-21"},
+            )
+            assert issued.status_code == 200, issued.text
+            plan = issued.json()
+            assert plan["start_mode"] == "next_workout"
             assert plan["start_date"] == "2026-10-21"
             monday = _week_day(plan, 0)
             midweek = _week_day(plan, 2)
@@ -568,14 +576,14 @@ def test_trainer_start_anchor_hides_leading_week_and_keeps_completed_day() -> No
             assert completed.status_code == 200, completed.text
 
             forbidden = client.patch(
-                f"{base}/active",
+                f"{base}/start",
                 headers=_auth(client_user_id),
-                json={"start_mode": "next_week"},
+                json={"start_mode": "next_monday", "start_date": "2026-10-26"},
             )
             assert forbidden.status_code == 403
 
             shifted = client.patch(
-                f"{base}/active",
+                f"{base}/start",
                 headers=_headers(trainer_user_id),
                 json={"start_mode": "date", "start_date": "2026-10-26"},
             )
@@ -596,7 +604,7 @@ def test_trainer_start_anchor_hides_leading_week_and_keeps_completed_day() -> No
             assert by_id[friday["day_id"]]["shown"] is True
 
 
-def test_saturday_next_slot_and_next_week_monday() -> None:
+def test_saturday_next_workout_and_next_monday() -> None:
     client_user_id = "start_saturday_client"
     trainer_user_id = "start_saturday_trainer"
     base = _plan_base(client_user_id, trainer_user_id)
@@ -614,37 +622,49 @@ def test_saturday_next_slot_and_next_week_monday() -> None:
                     "level": "intermediate",
                     "workouts_per_week": 3,
                     "day_count": 0,
-                    "start_mode": "next_slot",
+                    "start_date": "2026-10-24",
                 },
             )
             assert created.status_code == 201, created.text
             headers = _headers(trainer_user_id)
-            plan = created.json()
             for day_of_week in (0, 2, 4):
                 added = client.post(f"{base}/days", headers=headers, json={"week": 1, "day_of_week": day_of_week})
                 assert added.status_code == 201, added.text
-                plan = added.json()
+            issued = client.patch(
+                f"{base}/start",
+                headers=headers,
+                json={"start_mode": "next_workout", "start_date": "2026-10-26"},
+            )
+            assert issued.status_code == 200, issued.text
+            plan = issued.json()
+            assert plan["start_mode"] == "next_workout"
             assert plan["start_date"] == "2026-10-26"
             assert _week_day(plan, 0)["scheduled_for"] == "2026-10-26"
             assert _week_day(plan, 2)["scheduled_for"] == "2026-10-28"
             assert _week_day(plan, 4)["scheduled_for"] == "2026-10-30"
             assert all(item["shown"] for item in plan["days"])
 
-            missing_date = client.patch(f"{base}/active", headers=headers, json={"start_mode": "date"})
-            assert missing_date.status_code == 422
-            extra_date = client.patch(
-                f"{base}/active",
+            missing_date = client.patch(
+                f"{base}/start",
                 headers=headers,
-                json={"start_mode": "next_week", "start_date": "2026-10-26"},
+                json={"start_mode": "date", "start_date": None},
             )
-            assert extra_date.status_code == 422
+            assert missing_date.status_code == 422
+            assert missing_date.json()["detail"] == "start_date is required when start_mode is date"
+            bad_mode = client.patch(f"{base}/start", headers=headers, json={"start_mode": "next_slot"})
+            assert bad_mode.status_code == 422
+            assert bad_mode.json()["detail"] == "start_mode must be next_workout, next_monday, or date"
 
             # Сегодня среда: следующая календарная неделя начинается в понедельник 26 октября.
             mocked_date.today.return_value = date(2026, 10, 21)
-            nxt = client.patch(f"{base}/active", headers=headers, json={"start_mode": "next_week"})
+            nxt = client.patch(
+                f"{base}/start",
+                headers=headers,
+                json={"start_mode": "next_monday", "start_date": "2026-10-26"},
+            )
             assert nxt.status_code == 200, nxt.text
             body = nxt.json()
-            assert body["start_mode"] == "next_week"
+            assert body["start_mode"] == "next_monday"
             assert body["start_date"] == "2026-10-26"
             assert _week_day(body, 0)["scheduled_for"] == "2026-10-26"
             assert _week_day(body, 2)["scheduled_for"] == "2026-10-28"
@@ -652,7 +672,7 @@ def test_saturday_next_slot_and_next_week_monday() -> None:
             assert all(item["shown"] for item in body["days"])
 
 
-def test_generate_next_week_starts_on_monday() -> None:
+def test_generate_next_monday_starts_on_monday() -> None:
     client_user_id = "start_generate_client"
     trainer_user_id = "start_generate_trainer"
     with _client() as client:
@@ -671,12 +691,12 @@ def test_generate_next_week_starts_on_monday() -> None:
                     "workout_location": "home",
                     "workouts_per_week": 3,
                     "unavailable_equipment": [],
-                    "start_mode": "next_week",
+                    "start_mode": "next_monday",
                 },
             )
         assert generated.status_code == 201, generated.text
         body = generated.json()
-        assert body["start_mode"] == "next_week"
+        assert body["start_mode"] == "next_monday"
         assert body["start_date"] == "2026-10-26"
         assert min(day["scheduled_for"] for day in body["days"]) == "2026-10-26"
         assert all(day["shown"] for day in body["days"])

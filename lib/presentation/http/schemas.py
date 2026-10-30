@@ -6,18 +6,12 @@ from pydantic import BaseModel, Field, model_validator
 WorkoutCategory = Literal["upper", "lower", "core", "full_body"]
 LoadScheme = Literal["flat", "ascending", "descending", "custom"]
 PlanSource = Literal["trainer", "system"]
-PlanStartModeName = Literal["next_slot", "next_week", "date"]
+PlanStartModeName = Literal["next_workout", "next_monday", "date"]
 
 
 def _validate_start_choice(start_mode: str | None, start_date: date | None) -> None:
-    if start_mode is None:
-        return
-    if start_mode == "date":
-        if start_date is None:
-            raise ValueError("start_date is required when start_mode=date")
-        return
-    if start_date is not None:
-        raise ValueError("start_date must be omitted unless start_mode=date")
+    if start_mode == "date" and start_date is None:
+        raise ValueError("start_date is required when start_mode is date")
 
 
 class HealthResponse(BaseModel):
@@ -199,15 +193,10 @@ class CreateEmptyPlanRequest(BaseModel):
 
 
 class UpdatePlanStartRequest(BaseModel):
-    """Якорь календаря при сохранении плана. date требует start_date, остальные режимы — нет."""
+    """Тело PATCH .../start. start_date обязателен только для date; для остальных режимов может быть null."""
 
-    start_mode: PlanStartModeName
+    start_mode: str = Field(min_length=1, max_length=32)
     start_date: date | None = None
-
-    @model_validator(mode="after")
-    def validate_start_choice(self) -> Self:
-        _validate_start_choice(self.start_mode, self.start_date)
-        return self
 
 
 class PlanSlotWriteRequest(BaseModel):
