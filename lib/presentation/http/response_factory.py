@@ -37,6 +37,7 @@ class PlanResponseFactory:
             workouts_per_week=plan.workouts_per_week,
             start_date=plan.start_date,
             end_date=plan.end_date,
+            start_mode=plan.start_mode,
             created_at=plan.created_at,
             updated_at=plan.updated_at,
             days=[PlanResponseFactory.from_domain_day(day) for day in plan.days],
@@ -67,6 +68,7 @@ class PlanResponseFactory:
             scheduled_time=PlanResponseFactory._clock(day.scheduled_time),
             started_at=day.started_at,
             finished_at=day.finished_at,
+            shown=day.shown,
             exercises=[PlanResponseFactory._exercise_response(line) for line in day.exercises],
         )
 

@@ -55,6 +55,7 @@ from presentation.http.schemas import (
     ReorderPlanSlotsRequest,
     TodayWorkoutResponse,
     UpdatePlanDayRequest,
+    UpdatePlanStartRequest,
     TrainerExerciseResponse,
     TrainingPlanResponse,
     UpdatePlanSlotRequest,
@@ -147,6 +148,25 @@ class PlanHttpHandler:
             with self._runtime.plan_service_scope() as plan_service:
                 plan = plan_service.create_empty_plan(
                     self._request_factory.to_create_empty_plan_command(client_user_id, trainer_user_id, payload)
+                )
+                return self._response_factory.from_domain_plan(plan)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def update_plan_start(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+        payload: UpdatePlanStartRequest,
+    ) -> TrainingPlanResponse:
+        try:
+            self._require_client_plan_editor(authorization, client_user_id, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                plan = plan_service.set_plan_start(
+                    self._request_factory.to_update_plan_start_command(client_user_id, trainer_user_id, payload)
                 )
                 return self._response_factory.from_domain_plan(plan)
         except PlanError as exc:
