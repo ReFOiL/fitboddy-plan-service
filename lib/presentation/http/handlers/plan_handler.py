@@ -636,7 +636,7 @@ class PlanHttpHandler:
         row_id: str,
     ) -> TrainerExerciseResponse:
         try:
-            self._require_self_trainer(authorization, trainer_user_id)
+            self._require_trainer_exercise_reader(authorization, trainer_user_id)
             with self._runtime.plan_service_scope() as plan_service:
                 item = plan_service.get_trainer_exercise(trainer_user_id, row_id)
                 return self._trainer_exercise_response(item)
@@ -1203,6 +1203,17 @@ class PlanHttpHandler:
         if user.role != "trainer":
             raise ForbiddenError("trainer role required")
         return user
+
+    def _require_trainer_exercise_reader(self, authorization: str | None, trainer_user_id: str) -> AuthUser:
+        # Карточку читают сам тренер, platform_admin и клиент с этой активной связью.
+        # Запись каталога и загрузка медиа остаются на _require_self_trainer и _require_trainer_owner.
+        user = self._require_current_user(authorization)
+        if user.user_id == trainer_user_id or user.role == "platform_admin":
+            return user
+        active_trainer_id = self._runtime.tenant_gateway.get_client_active_trainer_id(user.user_id)
+        if active_trainer_id == trainer_user_id:
+            return user
+        raise ForbiddenError("not allowed to read this trainer's exercise")
 
     def _require_can_access_client_plan(self, authorization: str | None, client_user_id: str) -> AuthUser:
         user = self._require_current_user(authorization)

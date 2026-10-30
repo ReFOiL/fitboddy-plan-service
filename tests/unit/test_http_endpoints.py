@@ -338,6 +338,94 @@ def test_trainer_catalog_crud() -> None:
         assert outsider.status_code == 403
 
 
+def test_bound_client_can_read_trainer_exercise_detail() -> None:
+    trainer_user_id = "trainer_detail_owner"
+    other_trainer_id = "trainer_detail_other"
+    own_client_id = "client_detail_own"
+    other_client_id = "client_detail_other"
+    unbound_client_id = "client_detail_unbound"
+    payload = {
+        "exercise_name": "Detail Squat",
+        "description": "Brace and sit back.",
+        "equipment": "barbell",
+        "is_cardio": False,
+        "is_hold": False,
+        "difficulty": 3,
+        "workout_category": "lower",
+    }
+    storage = _ObjectStorage()
+    try:
+        with _client() as client:
+            _install_test_stubs()
+            _use_storage(storage)
+            created = client.post(
+                f"/api/v1/trainers/{trainer_user_id}/exercises",
+                headers=_catalog(trainer_user_id),
+                json=payload,
+            )
+            assert created.status_code == 201
+            row_id = created.json()["row_id"]
+            detail_path = f"/api/v1/trainers/{trainer_user_id}/exercises/{row_id}"
+            uploaded = client.post(
+                f"{detail_path}/photos/start",
+                headers=_catalog(trainer_user_id),
+                files={"file": ("start.jpg", _JPEG, "image/jpeg")},
+            )
+            assert uploaded.status_code == 200
+
+            trainer_detail = client.get(detail_path, headers=_catalog(trainer_user_id))
+            assert trainer_detail.status_code == 200
+            assert trainer_detail.json()["description"] == "Brace and sit back."
+
+            _link(own_client_id, trainer_user_id)
+            own_client = client.get(detail_path, headers=_auth(own_client_id, role="client"))
+            assert own_client.status_code == 200
+            body = own_client.json()
+            assert body["row_id"] == row_id
+            assert body["trainer_user_id"] == trainer_user_id
+            image_url = body["start_image_url"]
+            assert image_url
+            media = client.get(image_url)
+            assert media.status_code == 200
+            assert media.content == _JPEG
+
+            catalog = client.get(
+                f"/api/v1/trainers/{trainer_user_id}/exercises",
+                headers=_auth(own_client_id, role="client"),
+            )
+            assert catalog.status_code == 403
+            updated = client.put(
+                detail_path,
+                headers=_auth(own_client_id, role="client"),
+                json={"exercise_name": "Hijacked Squat"},
+            )
+            assert updated.status_code == 403
+            archived = client.post(
+                f"{detail_path}/archive",
+                headers=_auth(own_client_id, role="client"),
+            )
+            assert archived.status_code == 403
+            photo = client.post(
+                f"{detail_path}/photos/end",
+                headers=_auth(own_client_id, role="client"),
+                files={"file": ("end.jpg", _JPEG, "image/jpeg")},
+            )
+            assert photo.status_code == 403
+
+            _link(other_client_id, other_trainer_id)
+            other_client = client.get(detail_path, headers=_auth(other_client_id, role="client"))
+            assert other_client.status_code == 403
+
+            unbound = client.get(detail_path, headers=_auth(unbound_client_id, role="client"))
+            assert unbound.status_code == 403
+
+            admin = client.get(detail_path, headers=_auth("admin_detail", role="platform_admin"))
+            assert admin.status_code == 200
+            assert admin.json()["row_id"] == row_id
+    finally:
+        _clear_storage()
+
+
 def test_exercise_video_upload_requires_s3_configuration() -> None:
     trainer_user_id = "trainer_video_1"
     payload = {

@@ -32,7 +32,7 @@
 - `POST /api/v1/trainers/{trainer_user_id}/exercises` - добавить упражнение в каталог тренера (id генерируется на бэке)
 - `GET /api/v1/trainers/{trainer_user_id}/exercises/sync-preview` - предпросмотр мягкой синхронизации с системным каталогом, без записи
 - `POST /api/v1/trainers/{trainer_user_id}/exercises/sync` - применить выбранные добавления и обновления медиа
-- `GET /api/v1/trainers/{trainer_user_id}/exercises/{row_id}` - получить упражнение тренера (для клиента — просмотр деталей)
+- `GET /api/v1/trainers/{trainer_user_id}/exercises/{row_id}` - карточка упражнения. Читают сам тренер, `platform_admin` и клиент, у которого этот тренер активный. Список каталога и запись — только тренер-владелец. Фото и видео в ответе — подписанные URL `GET /trainers/media/...` без заголовка Authorization
 - `PUT /api/v1/trainers/{trainer_user_id}/exercises/{row_id}` - обновить упражнение тренера
 - `POST /api/v1/trainers/{trainer_user_id}/exercises/{row_id}/archive` - архивировать упражнение (soft archive)
 - `POST /api/v1/trainers/{trainer_user_id}/exercises/{row_id}/video` - загрузить видео упражнения (multipart `file`, `.mp4`/`.mov`, до 200MB). Роль `trainer`, упражнение принадлежит этому тренеру
