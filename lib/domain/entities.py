@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,17 @@ class TrainingPlan:
     days: list[PlanDay]
     previous_adherence: float | None = None
     start_mode: str | None = None
+
+
+@dataclass(frozen=True)
+class PlanDayWeekdayChange:
+    """Календарный перенос дня: day_index плана не меняется."""
+
+    outcome: Literal["set", "swap"]
+    day_index: int
+    day_of_week: int
+    swapped_day_index: int | None
+    plan: TrainingPlan
 
 
 @dataclass(frozen=True)

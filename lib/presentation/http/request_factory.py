@@ -6,6 +6,7 @@ from application.commands import (
     ApplyCatalogSyncCommand,
     ArchivePlatformExerciseCommand,
     ArchiveTrainerExerciseCommand,
+    ChangePlanDayWeekdayCommand,
     CompletePlanDayCommand,
     CopyPlanDayCommand,
     CopyPlanWeekCommand,
@@ -38,6 +39,7 @@ from application.commands import (
 from presentation.http.schemas import (
     AddPlanDayRequest,
     ApplyCatalogSyncRequest,
+    ChangePlanDayWeekdayRequest,
     CompletePlanDayRequest,
     CopyPlanDayRequest,
     CopyPlanWeekRequest,
@@ -256,6 +258,20 @@ class PlanRequestFactory:
             day_index=day_index,
             scheduled_time=payload.scheduled_time,
             scheduled_time_specified="scheduled_time" in payload.model_fields_set,
+        )
+
+    @staticmethod
+    def to_change_plan_day_weekday_command(
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: ChangePlanDayWeekdayRequest,
+    ) -> ChangePlanDayWeekdayCommand:
+        return ChangePlanDayWeekdayCommand(
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            day_index=day_index,
+            day_of_week=payload.day_of_week,
         )
 
     @staticmethod

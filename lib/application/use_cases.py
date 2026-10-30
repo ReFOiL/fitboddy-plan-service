@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from datetime import date, datetime, time, timedelta, timezone
+from typing import Literal
 from uuid import uuid4
 
 from sqlalchemy import func, or_, select
@@ -30,6 +31,7 @@ from application.commands import (
     RestoreTrainerExerciseCommand,
     AddPlanDayCommand,
     AddPlanSlotCommand,
+    ChangePlanDayWeekdayCommand,
     CompletePlanDayCommand,
     CopyPlanDayCommand,
     CopyPlanWeekCommand,
@@ -98,6 +100,7 @@ from domain.entities import (
     ClientExerciseLoad,
     Muscle,
     PlanDay,
+    PlanDayWeekdayChange,
     PlatformExercise,
     TodayWorkout,
     TrainerExercise,
@@ -516,6 +519,39 @@ class PlanService:
             raise ValidationError("scheduled_time is required")
         day.scheduled_time = self._parse_scheduled_time(command.scheduled_time)
         return self._commit_day(plan, day)
+
+    def change_plan_day_weekday(self, command: ChangePlanDayWeekdayCommand) -> PlanDayWeekdayChange:
+        plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
+        day = self._require_plan_day(plan, command.day_index)
+        self._validate_week_and_weekday(day.week, command.day_of_week)
+        if day.day_of_week == command.day_of_week:
+            raise ValidationError("day is already on that weekday")
+        # day_index не перенумеровываем: прогресс и история клиента висят на нём.
+        week_days = [item for item in self._days.list_for_plan(plan.plan_id) if item.week == day.week]
+        if sum(item.day_of_week == day.day_of_week for item in week_days) != 1:
+            raise ConflictError("weekday is occupied by more than one plan day")
+        occupants = [item for item in week_days if item.day_of_week == command.day_of_week]
+        if len(occupants) > 1:
+            raise ConflictError("weekday is occupied by more than one plan day")
+        other = occupants[0] if occupants else None
+        previous_weekday = day.day_of_week
+        self._retarget_weekday(plan, day, command.day_of_week)
+        if other is not None:
+            # Обмен только календарного дня. Слоты не копируем и не склеиваем.
+            self._retarget_weekday(plan, other, previous_weekday)
+        self._refresh_next_workout_anchor(plan)
+        self._assert_weekday_schedule(plan.plan_id)
+        self._refresh_plan_end_date(plan)
+        outcome: Literal["set", "swap"] = "swap" if other is not None else "set"
+        swapped_day_index = None if other is None else other.day_index
+        committed = self._commit_plan(plan)
+        return PlanDayWeekdayChange(
+            outcome=outcome,
+            day_index=command.day_index,
+            day_of_week=command.day_of_week,
+            swapped_day_index=swapped_day_index,
+            plan=committed,
+        )
 
     def copy_plan_day(self, command: CopyPlanDayCommand) -> TrainingPlan:
         plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
@@ -1637,6 +1673,26 @@ class PlanService:
             set_prescriptions_json=source.set_prescriptions_json,
             note=source.note,
         )
+
+    def _retarget_weekday(self, plan: TrainingPlanModel, day: PlanDayModel, day_of_week: int) -> None:
+        # Меняется только календарная позиция. day_index, неделя, слоты и отметки выполнения остаются.
+        day.day_of_week = day_of_week
+        day.scheduled_for = self._scheduled_for_slot(plan, day.week, day_of_week)
+
+    def _assert_weekday_schedule(self, plan_id: str) -> None:
+        days = self._days.list_for_plan(plan_id)
+        by_date: dict[date, list[PlanDayModel]] = {}
+        for item in days:
+            by_date.setdefault(item.scheduled_for, []).append(item)
+        for group in by_date.values():
+            if len(group) < 2:
+                continue
+            if any(item.is_completed for item in group):
+                raise ConflictError("weekday change overlaps a completed workout")
+            raise ConflictError("weekday change overlaps another plan day")
+        slots = [(item.week, item.day_of_week) for item in days]
+        if len(slots) != len(set(slots)):
+            raise ConflictError("weekday is occupied by more than one plan day")
 
     def _refresh_plan_end_date(self, plan: TrainingPlanModel) -> None:
         # start_date — якорь недель, его не двигаем, иначе съедут уже созданные дни.

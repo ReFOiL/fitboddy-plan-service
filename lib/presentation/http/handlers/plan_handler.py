@@ -37,6 +37,8 @@ from presentation.http.schemas import (
     CatalogSyncUpdateItem,
     ClientExerciseLoadResponse,
     AddPlanDayRequest,
+    ChangePlanDayWeekdayRequest,
+    ChangePlanDayWeekdayResponse,
     CompletePlanDayRequest,
     CopyPlanDayRequest,
     CopyPlanWeekRequest,
@@ -359,6 +361,31 @@ class PlanHttpHandler:
                     )
                 )
                 return self._response_factory.from_domain_day(day)
+        except PlanError as exc:
+            self._error_translator.raise_http_error(exc)
+        raise AssertionError("unreachable")
+
+    def change_plan_day_weekday(
+        self,
+        *,
+        authorization: str | None,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: ChangePlanDayWeekdayRequest,
+    ) -> ChangePlanDayWeekdayResponse:
+        try:
+            self._require_client_plan_editor(authorization, client_user_id, trainer_user_id)
+            with self._runtime.plan_service_scope() as plan_service:
+                change = plan_service.change_plan_day_weekday(
+                    self._request_factory.to_change_plan_day_weekday_command(
+                        client_user_id,
+                        trainer_user_id,
+                        day_index,
+                        payload,
+                    )
+                )
+                return self._response_factory.from_weekday_change(change)
         except PlanError as exc:
             self._error_translator.raise_http_error(exc)
         raise AssertionError("unreachable")

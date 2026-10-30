@@ -123,6 +123,7 @@ def test_manual_plan_auth_and_client_forbidden() -> None:
             ("put", f"{base}/days/1/exercises/order", {"line_ids": []}),
             ("post", f"{base}/days", {"week": 1, "day_of_week": 0}),
             ("patch", f"{base}/days/1", {"scheduled_time": "18:00"}),
+            ("post", f"{base}/days/1/weekday", {"day_of_week": 0}),
             ("post", f"{base}/days/1/copy", {"week": 2, "day_of_week": 0}),
             ("post", f"{base}/weeks/1/copy", {"target_week": 2}),
         ]
