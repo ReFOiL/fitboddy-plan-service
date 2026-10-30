@@ -6,6 +6,12 @@ from pydantic import BaseModel, Field, model_validator
 WorkoutCategory = Literal["upper", "lower", "core", "full_body"]
 LoadScheme = Literal["flat", "ascending", "descending", "custom"]
 PlanSource = Literal["trainer", "system"]
+PlanStartModeName = Literal["next_workout", "next_monday", "date"]
+
+
+def _validate_start_choice(start_mode: str | None, start_date: date | None) -> None:
+    if start_mode == "date" and start_date is None:
+        raise ValueError("start_date is required when start_mode is date")
 
 
 class HealthResponse(BaseModel):
@@ -22,6 +28,7 @@ class GeneratePlanRequest(BaseModel):
     workouts_per_week: int = Field(default=3, ge=1, le=7)
     unavailable_equipment: list[str] = Field(default_factory=list)
     start_date: date | None = None
+    start_mode: PlanStartModeName | None = None
 
     @model_validator(mode="after")
     def validate_source_binding(self) -> Self:
@@ -29,6 +36,7 @@ class GeneratePlanRequest(BaseModel):
             raise ValueError("trainer_user_id is required when source=trainer")
         if self.source == "system" and self.trainer_user_id:
             raise ValueError("trainer_user_id must be omitted when source=system")
+        _validate_start_choice(self.start_mode, self.start_date)
         return self
 
 
@@ -129,6 +137,8 @@ class PlanDayResponse(BaseModel):
     scheduled_time: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    # false — день первой недели раньше якоря: не показывать и не считать пропуском.
+    shown: bool = True
     exercises: list[PlanExerciseResponse]
 
 
@@ -161,6 +171,7 @@ class TrainingPlanResponse(BaseModel):
     workouts_per_week: int
     start_date: date
     end_date: date
+    start_mode: str | None = None
     created_at: datetime
     updated_at: datetime
     days: list[PlanDayResponse]
@@ -173,6 +184,19 @@ class CreateEmptyPlanRequest(BaseModel):
     workouts_per_week: int = Field(default=3, ge=1, le=7)
     start_date: date | None = None
     day_count: int = Field(default=0, ge=0, le=28)
+    start_mode: PlanStartModeName | None = None
+
+    @model_validator(mode="after")
+    def validate_start_choice(self) -> Self:
+        _validate_start_choice(self.start_mode, self.start_date)
+        return self
+
+
+class UpdatePlanStartRequest(BaseModel):
+    """Тело PATCH .../start. start_date обязателен только для date; для остальных режимов может быть null."""
+
+    start_mode: str = Field(min_length=1, max_length=32)
+    start_date: date | None = None
 
 
 class PlanSlotWriteRequest(BaseModel):

@@ -7,6 +7,7 @@ from application.models import (
     TrainerExerciseModel,
     TrainingPlanModel,
 )
+from application.plan_start import day_is_shown
 from application.repositories.serialization import (
     dumps_scheme_steps as encode_scheme_steps,
     dumps_set_prescriptions as encode_set_prescriptions,
@@ -40,12 +41,23 @@ class PlanMapper:
             end_date=plan.end_date,
             created_at=plan.created_at,
             updated_at=plan.updated_at,
-            days=[PlanMapper.day_to_domain(day) for day in days],
+            days=[PlanMapper.day_to_domain(day, plan) for day in days],
+            start_mode=plan.start_mode,
         )
 
     @staticmethod
-    def day_to_domain(day: PlanDayModel) -> PlanDay:
+    def day_to_domain(day: PlanDayModel, plan: TrainingPlanModel | None = None) -> PlanDay:
         exercises = sorted(day.exercises, key=lambda item: item.sort_order)
+        owner = plan if plan is not None else day.plan
+        shown = True
+        if owner is not None:
+            shown = day_is_shown(
+                owner.start_mode,
+                owner.start_date,
+                day.week,
+                day.scheduled_for,
+                bool(day.is_completed),
+            )
         return PlanDay(
             day_id=day.day_id,
             day_index=day.day_index,
@@ -77,6 +89,7 @@ class PlanMapper:
             started_at=day.started_at,
             # Старые завершения писали только completed_at: для них финиш — это оно.
             finished_at=day.finished_at or day.completed_at,
+            shown=shown,
         )
 
     @staticmethod

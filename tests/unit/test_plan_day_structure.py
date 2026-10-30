@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from alembic import command
 from alembic.config import Config
@@ -483,6 +484,222 @@ def test_completion_without_body_leaves_start_empty() -> None:
         assert body["started_at"] is None
         assert body["finished_at"] == body["completed_at"]
         assert body["finished_at"] is not None
+
+
+def _week_day(plan: dict, day_of_week: int, week: int = 1) -> dict:
+    return next(item for item in plan["days"] if item["week"] == week and item["day_of_week"] == day_of_week)
+
+
+def test_trainer_start_anchor_hides_leading_week_and_keeps_completed_day() -> None:
+    client_user_id = "start_anchor_client"
+    trainer_user_id = "start_anchor_trainer"
+    base = _plan_base(client_user_id, trainer_user_id)
+    wednesday = date(2026, 10, 21)
+    with _client() as client:
+        _install_test_stubs()
+        _link(client_user_id, trainer_user_id)
+        with patch("application.use_cases.date") as mocked_date:
+            mocked_date.today.return_value = wednesday
+            created = client.post(
+                f"{base}/active",
+                headers=_headers(trainer_user_id),
+                json={
+                    "goal": "maintenance",
+                    "level": "intermediate",
+                    "workouts_per_week": 3,
+                    "day_count": 0,
+                    "start_date": "2026-10-21",
+                },
+            )
+            assert created.status_code == 201, created.text
+            assert created.json()["start_mode"] is None
+            assert created.json()["start_date"] == "2026-10-21"
+            headers = _headers(trainer_user_id)
+            plan = created.json()
+            for day_of_week in (0, 2, 4):
+                added = client.post(
+                    f"{base}/days",
+                    headers=headers,
+                    json={"week": 1, "day_of_week": day_of_week},
+                )
+                assert added.status_code == 201, added.text
+                plan = added.json()
+
+            issued = client.patch(
+                f"{base}/start",
+                headers=headers,
+                json={"start_mode": "next_workout", "start_date": "2026-10-21"},
+            )
+            assert issued.status_code == 200, issued.text
+            plan = issued.json()
+            assert plan["start_mode"] == "next_workout"
+            assert plan["start_date"] == "2026-10-21"
+            monday = _week_day(plan, 0)
+            midweek = _week_day(plan, 2)
+            friday = _week_day(plan, 4)
+            assert monday["scheduled_for"] == "2026-10-19"
+            assert monday["shown"] is False
+            assert midweek["scheduled_for"] == "2026-10-21"
+            assert midweek["shown"] is True
+            assert friday["scheduled_for"] == "2026-10-23"
+            assert friday["shown"] is True
+            assert [item["day_index"] for item in plan["days"]] == [1, 2, 3]
+
+            exercise = _create_exercise(client, trainer_user_id)
+            for day_index in (monday["day_index"], midweek["day_index"]):
+                slotted = client.post(
+                    f"{base}/days/{day_index}/exercises",
+                    headers=headers,
+                    json={"exercise_id": exercise["row_id"], "sets": 3, "reps": 8},
+                )
+                assert slotted.status_code == 201, slotted.text
+
+            mocked_date.today.return_value = date(2026, 10, 19)
+            hidden_today = client.get("/api/v1/plans/me/today", headers=_auth(client_user_id))
+            assert hidden_today.status_code == 404
+
+            mocked_date.today.return_value = wednesday
+            visible_today = client.get("/api/v1/plans/me/today", headers=_auth(client_user_id))
+            assert visible_today.status_code == 200, visible_today.text
+            assert visible_today.json()["day_index"] == midweek["day_index"]
+            assert visible_today.json()["scheduled_for"] == "2026-10-21"
+
+            denied = client.post(
+                f"/api/v1/plans/me/days/{monday['day_index']}/complete",
+                headers=_auth(client_user_id),
+            )
+            assert denied.status_code == 404
+            completed = client.post(
+                f"/api/v1/plans/me/days/{midweek['day_index']}/complete",
+                headers=_auth(client_user_id),
+            )
+            assert completed.status_code == 200, completed.text
+
+            forbidden = client.patch(
+                f"{base}/start",
+                headers=_auth(client_user_id),
+                json={"start_mode": "next_monday", "start_date": "2026-10-26"},
+            )
+            assert forbidden.status_code == 403
+
+            shifted = client.patch(
+                f"{base}/start",
+                headers=_headers(trainer_user_id),
+                json={"start_mode": "date", "start_date": "2026-10-26"},
+            )
+            assert shifted.status_code == 200, shifted.text
+            body = shifted.json()
+            assert body["start_mode"] == "date"
+            assert body["start_date"] == "2026-10-26"
+            by_id = {item["day_id"]: item for item in body["days"]}
+            assert by_id[midweek["day_id"]]["day_index"] == midweek["day_index"]
+            assert by_id[midweek["day_id"]]["scheduled_for"] == "2026-10-21"
+            assert by_id[midweek["day_id"]]["is_completed"] is True
+            assert by_id[midweek["day_id"]]["shown"] is True
+            assert by_id[monday["day_id"]]["day_index"] == monday["day_index"]
+            assert by_id[monday["day_id"]]["scheduled_for"] == "2026-10-26"
+            assert by_id[monday["day_id"]]["shown"] is True
+            assert by_id[friday["day_id"]]["day_index"] == friday["day_index"]
+            assert by_id[friday["day_id"]]["scheduled_for"] == "2026-10-30"
+            assert by_id[friday["day_id"]]["shown"] is True
+
+
+def test_saturday_next_workout_and_next_monday() -> None:
+    client_user_id = "start_saturday_client"
+    trainer_user_id = "start_saturday_trainer"
+    base = _plan_base(client_user_id, trainer_user_id)
+    saturday = date(2026, 10, 24)
+    with _client() as client:
+        _install_test_stubs()
+        _link(client_user_id, trainer_user_id)
+        with patch("application.use_cases.date") as mocked_date:
+            mocked_date.today.return_value = saturday
+            created = client.post(
+                f"{base}/active",
+                headers=_headers(trainer_user_id),
+                json={
+                    "goal": "maintenance",
+                    "level": "intermediate",
+                    "workouts_per_week": 3,
+                    "day_count": 0,
+                    "start_date": "2026-10-24",
+                },
+            )
+            assert created.status_code == 201, created.text
+            headers = _headers(trainer_user_id)
+            for day_of_week in (0, 2, 4):
+                added = client.post(f"{base}/days", headers=headers, json={"week": 1, "day_of_week": day_of_week})
+                assert added.status_code == 201, added.text
+            issued = client.patch(
+                f"{base}/start",
+                headers=headers,
+                json={"start_mode": "next_workout", "start_date": "2026-10-26"},
+            )
+            assert issued.status_code == 200, issued.text
+            plan = issued.json()
+            assert plan["start_mode"] == "next_workout"
+            assert plan["start_date"] == "2026-10-26"
+            assert _week_day(plan, 0)["scheduled_for"] == "2026-10-26"
+            assert _week_day(plan, 2)["scheduled_for"] == "2026-10-28"
+            assert _week_day(plan, 4)["scheduled_for"] == "2026-10-30"
+            assert all(item["shown"] for item in plan["days"])
+
+            missing_date = client.patch(
+                f"{base}/start",
+                headers=headers,
+                json={"start_mode": "date", "start_date": None},
+            )
+            assert missing_date.status_code == 422
+            assert missing_date.json()["detail"] == "start_date is required when start_mode is date"
+            bad_mode = client.patch(f"{base}/start", headers=headers, json={"start_mode": "next_slot"})
+            assert bad_mode.status_code == 422
+            assert bad_mode.json()["detail"] == "start_mode must be next_workout, next_monday, or date"
+
+            # Сегодня среда: следующая календарная неделя начинается в понедельник 26 октября.
+            mocked_date.today.return_value = date(2026, 10, 21)
+            nxt = client.patch(
+                f"{base}/start",
+                headers=headers,
+                json={"start_mode": "next_monday", "start_date": "2026-10-26"},
+            )
+            assert nxt.status_code == 200, nxt.text
+            body = nxt.json()
+            assert body["start_mode"] == "next_monday"
+            assert body["start_date"] == "2026-10-26"
+            assert _week_day(body, 0)["scheduled_for"] == "2026-10-26"
+            assert _week_day(body, 2)["scheduled_for"] == "2026-10-28"
+            assert _week_day(body, 4)["scheduled_for"] == "2026-10-30"
+            assert all(item["shown"] for item in body["days"])
+
+
+def test_generate_next_monday_starts_on_monday() -> None:
+    client_user_id = "start_generate_client"
+    trainer_user_id = "start_generate_trainer"
+    with _client() as client:
+        _install_test_stubs()
+        _link(client_user_id, trainer_user_id)
+        with patch("application.use_cases.date") as mocked_date:
+            mocked_date.today.return_value = date(2026, 10, 21)
+            generated = client.post(
+                "/api/v1/plans/generate",
+                headers=_headers(trainer_user_id),
+                json={
+                    "trainer_user_id": trainer_user_id,
+                    "user_id": client_user_id,
+                    "goal": "maintenance",
+                    "level": "beginner",
+                    "workout_location": "home",
+                    "workouts_per_week": 3,
+                    "unavailable_equipment": [],
+                    "start_mode": "next_monday",
+                },
+            )
+        assert generated.status_code == 201, generated.text
+        body = generated.json()
+        assert body["start_mode"] == "next_monday"
+        assert body["start_date"] == "2026-10-26"
+        assert min(day["scheduled_for"] for day in body["days"]) == "2026-10-26"
+        assert all(day["shown"] for day in body["days"])
 
 
 def test_note_and_schedule_migration_is_reversible(tmp_path: Path, monkeypatch) -> None:

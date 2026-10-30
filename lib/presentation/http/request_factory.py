@@ -29,6 +29,7 @@ from application.commands import (
     RestoreTrainerExerciseCommand,
     UpdatePlanDayCommand,
     UpdatePlanSlotCommand,
+    UpdatePlanStartCommand,
     UpdatePlatformExerciseCommand,
     UpdateTrainerExerciseCommand,
     UpsertClientLoadCommand,
@@ -47,6 +48,7 @@ from presentation.http.schemas import (
     ReorderPlanSlotsRequest,
     UpdatePlanDayRequest,
     UpdatePlanSlotRequest,
+    UpdatePlanStartRequest,
     UpsertClientLoadRequest,
     UpsertPlatformExerciseRequest,
     UpsertTrainerExerciseRequest,
@@ -66,6 +68,7 @@ class PlanRequestFactory:
             workouts_per_week=payload.workouts_per_week,
             unavailable_equipment=list(payload.unavailable_equipment),
             start_date=payload.start_date,
+            start_mode=payload.start_mode,
         )
 
     @staticmethod
@@ -96,6 +99,7 @@ class PlanRequestFactory:
             workouts_per_week=payload.workouts_per_week,
             start_date=payload.start_date,
             day_count=payload.day_count,
+            start_mode=payload.start_mode,
         )
 
     @staticmethod
@@ -198,6 +202,19 @@ class PlanRequestFactory:
             weight_kg=payload.weight_kg,
             weight_specified="weight_kg" in specified,
             note=payload.note,
+        )
+
+    @staticmethod
+    def to_update_plan_start_command(
+        client_user_id: str,
+        trainer_user_id: str,
+        payload: UpdatePlanStartRequest,
+    ) -> UpdatePlanStartCommand:
+        return UpdatePlanStartCommand(
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            start_mode=payload.start_mode,
+            start_date=payload.start_date,
         )
 
     @staticmethod

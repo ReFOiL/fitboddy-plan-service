@@ -9,6 +9,7 @@ from presentation.http.schemas import (
     CopyPlanDayRequest,
     CopyPlanWeekRequest,
     CreateEmptyPlanRequest,
+    UpdatePlanStartRequest,
     ApplyCatalogSyncRequest,
     ApplyCatalogSyncResponse,
     CatalogSyncPreviewResponse,
@@ -66,6 +67,12 @@ class PlanRoutes:
             self.create_empty_plan,
             methods=["POST"],
             status_code=status.HTTP_201_CREATED,
+            response_model=TrainingPlanResponse,
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/start",
+            self.update_plan_start,
+            methods=["PATCH"],
             response_model=TrainingPlanResponse,
         )
         self.router.add_api_route(
@@ -328,6 +335,21 @@ class PlanRoutes:
         authorization: str | None = Header(default=None),
     ) -> TrainingPlanResponse:
         return request.app.state.plan_handler.create_empty_plan(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            payload=payload,
+        )
+
+    @staticmethod
+    def update_plan_start(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        payload: UpdatePlanStartRequest,
+        authorization: str | None = Header(default=None),
+    ) -> TrainingPlanResponse:
+        return request.app.state.plan_handler.update_plan_start(
             authorization=authorization,
             client_user_id=client_user_id,
             trainer_user_id=trainer_user_id,

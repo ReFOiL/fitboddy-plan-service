@@ -13,6 +13,7 @@ class GeneratePlanCommand:
     workouts_per_week: int
     unavailable_equipment: list[str]
     start_date: date | None
+    start_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ class CreateEmptyPlanCommand:
     workouts_per_week: int
     start_date: date | None
     day_count: int
+    start_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -172,6 +174,14 @@ class CopyPlanWeekCommand:
     week: int
     target_week: int
     mode: str
+
+
+@dataclass(frozen=True)
+class UpdatePlanStartCommand:
+    client_user_id: str
+    trainer_user_id: str
+    start_mode: str
+    start_date: date | None
 
 
 @dataclass(frozen=True)

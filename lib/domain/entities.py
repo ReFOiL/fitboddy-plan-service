@@ -42,6 +42,7 @@ class PlanDay:
     scheduled_time: time | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    shown: bool = True
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,7 @@ class TrainingPlan:
     updated_at: datetime
     days: list[PlanDay]
     previous_adherence: float | None = None
+    start_mode: str | None = None
 
 
 @dataclass(frozen=True)

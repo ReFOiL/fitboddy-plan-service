@@ -51,6 +51,7 @@ from application.commands import (
     ReplacePlanExerciseCommand,
     UpdatePlanDayCommand,
     UpdatePlanSlotCommand,
+    UpdatePlanStartCommand,
     UpdatePlatformExerciseCommand,
     UpdateTrainerExerciseCommand,
     UpsertClientLoadCommand,
@@ -73,6 +74,12 @@ from application.models import (
     TrainingPlanModel,
 )
 from application.muscle_catalog import derive_workout_category, is_known_muscle_slug
+from application.plan_start import (
+    PlanStartMode,
+    day_is_shown,
+    monday_aligned_date,
+    resolve_plan_start,
+)
 from application.repositories import (
     ClientExerciseLoadRepository,
     GenerationPolicyRepository,
@@ -199,10 +206,15 @@ class PlanService:
             self._adjust_wpw_by_adherence(base_wpw, previous_adherence, is_first_plan)
         )
 
-        # Replace/rebuild always starts today (unless caller sets an explicit date).
+        # Replace/rebuild starts today unless the caller sets a date or a start mode.
         # Do not wait for previous plan end_date — that pushed first workouts weeks ahead
         # when the old cycle itself started in the future.
-        start_date = command.start_date if command.start_date is not None else date.today()
+        # У генерации слотов ещё нет: next_workout совпадает с сегодня, генератор ставит первую тренировку на якорь.
+        start_mode = PlanStartMode.parse(command.start_mode)
+        if start_mode is None:
+            start_date = command.start_date if command.start_date is not None else date.today()
+        else:
+            start_date = resolve_plan_start(start_mode, command.start_date, date.today(), set())
 
         unavailable = set(normalize_equipment_list(command.unavailable_equipment))
         unavailable_keys = {item.casefold() for item in unavailable}
@@ -279,6 +291,7 @@ class PlanService:
                     workouts_per_week=workouts_per_week,
                     start_date=min(item.scheduled_for for item in sessions),
                     end_date=max(item.scheduled_for for item in sessions),
+                    start_mode=None if start_mode is None else start_mode.value,
                 )
             )
             day_index = 1
@@ -361,7 +374,12 @@ class PlanService:
         goal = TrainingGoal.from_raw(command.goal)
         level = TrainingLevel.from_raw(command.level)
         workouts_per_week = self._normalize_workouts_per_week(command.workouts_per_week)
-        start = command.start_date if command.start_date is not None else date.today()
+        start_mode = PlanStartMode.parse(command.start_mode)
+        if start_mode is None:
+            start = command.start_date if command.start_date is not None else date.today()
+        else:
+            # Дней ещё нет, поэтому next_workout здесь равен сегодня. Слоты пересчитают якорь сами.
+            start = resolve_plan_start(start_mode, command.start_date, date.today(), set())
         end = start if command.day_count == 0 else start + timedelta(days=command.day_count - 1)
         plan_id = str(uuid4())
         try:
@@ -377,6 +395,7 @@ class PlanService:
                     workouts_per_week=workouts_per_week,
                     start_date=start,
                     end_date=end,
+                    start_mode=None if start_mode is None else start_mode.value,
                 )
             )
             for offset in range(command.day_count):
@@ -482,14 +501,13 @@ class PlanService:
             scheduled_time=self._parse_scheduled_time(command.scheduled_time),
             volume_multiplier=1.0,
         )
-        return self._commit_plan(plan)
+        return self._finish_structure_edit(plan)
 
     def remove_plan_day(self, command: RemovePlanDayCommand) -> TrainingPlan:
         plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
         day = self._require_plan_day(plan, command.day_index)
         self._days.delete(day)
-        self._refresh_plan_end_date(plan)
-        return self._commit_plan(plan)
+        return self._finish_structure_edit(plan)
 
     def update_plan_day(self, command: UpdatePlanDayCommand) -> PlanDay:
         plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
@@ -518,7 +536,7 @@ class PlanService:
                 volume_multiplier=source.volume_multiplier,
             )
         self._copy_slots(source, target, mode=command.mode)
-        return self._commit_plan(plan)
+        return self._finish_structure_edit(plan)
 
     def copy_plan_week(self, command: CopyPlanWeekCommand) -> TrainingPlan:
         plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
@@ -552,6 +570,27 @@ class PlanService:
                     volume_multiplier=source.volume_multiplier,
                 )
             self._copy_slots(source, target, mode=command.mode)
+        return self._finish_structure_edit(plan)
+
+    def set_plan_start(self, command: UpdatePlanStartCommand) -> TrainingPlan:
+        plan = self._require_trainer_plan(command.client_user_id, command.trainer_user_id)
+        mode = PlanStartMode.parse(command.start_mode)
+        if mode is None:
+            raise ValidationError("start_mode must be next_workout, next_monday, or date")
+        # Якорь считаем от серверного «сегодня», тем же календарём, что и тренировка на сегодня.
+        # Присланный start_date используем только для mode=date: остальные режимы клиент может
+        # продублировать, но источник истины — день недели слотов и календарь сервера.
+        weekdays = self._slot_weekdays(plan.plan_id)
+        if mode is PlanStartMode.NEXT_WORKOUT and not weekdays:
+            plan.start_mode = mode.value
+            self._refresh_plan_end_date(plan)
+            return self._commit_plan(plan)
+        anchor = resolve_plan_start(mode, command.start_date, date.today(), weekdays)
+        plan.start_mode = mode.value
+        plan.start_date = anchor
+        # day_index не трогаем. Завершённые дни остаются на своих датах.
+        self._place_open_days(plan)
+        self._refresh_plan_end_date(plan)
         return self._commit_plan(plan)
 
     def require_plan(self, plan_id: str) -> TrainingPlan:
@@ -574,7 +613,7 @@ class PlanService:
         if plan is None:
             raise PlanNotFoundError("active plan not found")
         day = self._days.find_by_plan_and_date(plan.plan_id, date.today())
-        if day is None or not day.exercises:
+        if day is None or not self._day_shown(plan, day) or not day.exercises:
             raise PlanNotFoundError("today workout not found")
         return TodayWorkout(
             plan_id=plan.plan_id,
@@ -588,7 +627,7 @@ class PlanService:
         if plan is None:
             raise PlanNotFoundError("active plan not found")
         day = self._days.find_by_plan_and_index(plan.plan_id, command.day_index)
-        if day is None or not day.exercises:
+        if day is None or not day.exercises or not self._day_shown(plan, day):
             raise PlanNotFoundError("plan day not found")
         if day.is_completed:
             raise ConflictError("workout already completed")
@@ -613,7 +652,7 @@ class PlanService:
         if plan is None:
             raise PlanNotFoundError("active plan not found")
         day = self._days.find_by_plan_and_index(plan.plan_id, command.day_index)
-        if day is None or not day.exercises:
+        if day is None or not day.exercises or not self._day_shown(plan, day):
             raise PlanNotFoundError("plan day not found")
         if day.is_completed:
             raise ConflictError("cannot replace exercise in completed workout")
@@ -1525,7 +1564,7 @@ class PlanService:
         scheduled_time: time | None,
         volume_multiplier: float,
     ) -> PlanDayModel:
-        scheduled = self._date_for_week_weekday(plan.start_date, week, day_of_week)
+        scheduled = self._scheduled_for_slot(plan, week, day_of_week)
         if self._days.find_by_plan_and_date(plan.plan_id, scheduled) is not None:
             raise ConflictError("plan day already exists")
         if self._days.find_by_plan_week_and_weekday(plan.plan_id, week, day_of_week) is not None:
@@ -1623,11 +1662,64 @@ class PlanService:
 
     @staticmethod
     def _date_for_week_weekday(start: date, week: int, day_of_week: int) -> date:
-        # Неделя плана — окно в 7 дней от start_date, а не календарная неделя.
+        # Неделя плана без start_mode — окно в 7 дней от start_date, а не календарная неделя.
         # В таком окне каждый weekday встречается один раз.
         week_start = start + timedelta(days=(week - 1) * 7)
         offset = (day_of_week - week_start.weekday()) % 7
         return week_start + timedelta(days=offset)
+
+    @staticmethod
+    def _scheduled_for_slot(plan: TrainingPlanModel, week: int, day_of_week: int) -> date:
+        if plan.start_mode:
+            return monday_aligned_date(plan.start_date, week, day_of_week)
+        return PlanService._date_for_week_weekday(plan.start_date, week, day_of_week)
+
+    def _slot_weekdays(self, plan_id: str) -> set[int]:
+        return {day.day_of_week for day in self._days.list_for_plan(plan_id)}
+
+    def _has_completed_day(self, plan_id: str) -> bool:
+        return any(day.is_completed for day in self._days.list_for_plan(plan_id))
+
+    @staticmethod
+    def _day_shown(plan: TrainingPlanModel, day: PlanDayModel) -> bool:
+        return day_is_shown(plan.start_mode, plan.start_date, day.week, day.scheduled_for, bool(day.is_completed))
+
+    def _place_open_days(self, plan: TrainingPlanModel) -> None:
+        """Поставить незавершённые дни на календарь якоря. day_index и завершённые строки не меняются."""
+        if not plan.start_mode:
+            return
+        days = self._days.list_for_plan(plan.plan_id)
+        frozen_dates = {day.scheduled_for for day in days if day.is_completed}
+        placed: list[tuple[PlanDayModel, date]] = []
+        for day in days:
+            if day.is_completed:
+                continue
+            new_date = monday_aligned_date(plan.start_date, day.week, day.day_of_week)
+            if new_date in frozen_dates:
+                raise ConflictError("start date overlaps a completed workout")
+            placed.append((day, new_date))
+        for day, new_date in placed:
+            day.scheduled_for = new_date
+
+    def _refresh_next_workout_anchor(self, plan: TrainingPlanModel) -> None:
+        # Пока никто не завершил тренировку, next_workout следует за текущим набором слотов.
+        # Завершённый day_index и его дату задним числом не переписываем.
+        if plan.start_mode != PlanStartMode.NEXT_WORKOUT.value:
+            return
+        if self._has_completed_day(plan.plan_id):
+            return
+        plan.start_date = resolve_plan_start(
+            PlanStartMode.NEXT_WORKOUT,
+            None,
+            date.today(),
+            self._slot_weekdays(plan.plan_id),
+        )
+        self._place_open_days(plan)
+
+    def _finish_structure_edit(self, plan: TrainingPlanModel) -> TrainingPlan:
+        self._refresh_next_workout_anchor(plan)
+        self._refresh_plan_end_date(plan)
+        return self._commit_plan(plan)
 
     @staticmethod
     def _parse_scheduled_time(value: str | None) -> time | None:
@@ -1875,7 +1967,7 @@ class PlanService:
         self._touch_plan(plan)
         self._session.commit()
         self._session.refresh(day)
-        return self._mapper.day_to_domain(day)
+        return self._mapper.day_to_domain(day, plan)
 
     @staticmethod
     def _touch_plan(plan: TrainingPlanModel) -> None:
@@ -1901,11 +1993,15 @@ class PlanService:
     def _adherence_from_plan(plan) -> tuple[float, set[str]]:
         if plan is None or not plan.days:
             return 1.0, set()
-        completed = sum(1 for day in plan.days if day.is_completed)
-        adherence = round(completed / len(plan.days), 3)
+        # Дни до якоря в первой неделе не показаны и пропуском не являются.
+        counted = [day for day in plan.days if PlanService._day_shown(plan, day)]
+        if not counted:
+            return 1.0, set()
+        completed = sum(1 for day in counted if day.is_completed)
+        adherence = round(completed / len(counted), 3)
         recent_ids = {
             line.exercise_id
-            for day in plan.days
+            for day in counted
             for line in day.exercises
             if line.exercise_id
         }
