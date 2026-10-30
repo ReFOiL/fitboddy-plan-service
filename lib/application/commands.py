@@ -158,6 +158,14 @@ class UpdatePlanDayCommand:
 
 
 @dataclass(frozen=True)
+class ChangePlanDayWeekdayCommand:
+    client_user_id: str
+    trainer_user_id: str
+    day_index: int
+    day_of_week: int
+
+
+@dataclass(frozen=True)
 class CopyPlanDayCommand:
     client_user_id: str
     trainer_user_id: str

@@ -4,6 +4,8 @@ from presentation.http.upload_limits import read_upload_limited
 
 from presentation.http.schemas import (
     AddPlanDayRequest,
+    ChangePlanDayWeekdayRequest,
+    ChangePlanDayWeekdayResponse,
     ClientExerciseLoadResponse,
     CompletePlanDayRequest,
     CopyPlanDayRequest,
@@ -125,6 +127,12 @@ class PlanRoutes:
             self.update_plan_day,
             methods=["PATCH"],
             response_model=PlanDayResponse,
+        )
+        self.router.add_api_route(
+            "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}/weekday",
+            self.change_plan_day_weekday,
+            methods=["POST"],
+            response_model=ChangePlanDayWeekdayResponse,
         )
         self.router.add_api_route(
             "/plans/clients/{client_user_id}/trainers/{trainer_user_id}/days/{day_index}/copy",
@@ -517,6 +525,23 @@ class PlanRoutes:
         authorization: str | None = Header(default=None),
     ) -> PlanDayResponse:
         return request.app.state.plan_handler.update_plan_day(
+            authorization=authorization,
+            client_user_id=client_user_id,
+            trainer_user_id=trainer_user_id,
+            day_index=day_index,
+            payload=payload,
+        )
+
+    @staticmethod
+    def change_plan_day_weekday(
+        request: Request,
+        client_user_id: str,
+        trainer_user_id: str,
+        day_index: int,
+        payload: ChangePlanDayWeekdayRequest,
+        authorization: str | None = Header(default=None),
+    ) -> ChangePlanDayWeekdayResponse:
+        return request.app.state.plan_handler.change_plan_day_weekday(
             authorization=authorization,
             client_user_id=client_user_id,
             trainer_user_id=trainer_user_id,

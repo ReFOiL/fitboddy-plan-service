@@ -247,6 +247,22 @@ class UpdatePlanDayRequest(BaseModel):
     scheduled_time: str | None = Field(default=None, pattern=_HHMM)
 
 
+class ChangePlanDayWeekdayRequest(BaseModel):
+    """Новый день недели той же недели плана. Понедельник = 0. week и day_index не передаются."""
+
+    day_of_week: int = Field(ge=0, le=6)
+
+
+class ChangePlanDayWeekdayResponse(BaseModel):
+    """set — день недели был свободен. swap — два дня одной недели обменялись day_of_week."""
+
+    outcome: Literal["set", "swap"]
+    day_index: int
+    day_of_week: int
+    swapped_day_index: int | None = None
+    plan: TrainingPlanResponse
+
+
 class CopyPlanDayRequest(BaseModel):
     week: int = Field(ge=1, le=8)
     day_of_week: int = Field(ge=0, le=6)

@@ -5,12 +5,14 @@ from domain.entities import (
     ClientExerciseLoad,
     Muscle,
     PlanDay,
+    PlanDayWeekdayChange,
     PlanExercise,
     PlatformExercise,
     TodayWorkout,
     TrainingPlan,
 )
 from presentation.http.schemas import (
+    ChangePlanDayWeekdayResponse,
     ClientExerciseLoadResponse,
     GenerationPolicyResponse,
     MuscleResponse,
@@ -52,6 +54,16 @@ class PlanResponseFactory:
             default_splits=payload["default_splits"],
             default_workouts_per_week=payload["default_workouts_per_week"],
             exercises_per_session=payload.get("exercises_per_session") or {},
+        )
+
+    @staticmethod
+    def from_weekday_change(change: PlanDayWeekdayChange) -> ChangePlanDayWeekdayResponse:
+        return ChangePlanDayWeekdayResponse(
+            outcome=change.outcome,
+            day_index=change.day_index,
+            day_of_week=change.day_of_week,
+            swapped_day_index=change.swapped_day_index,
+            plan=PlanResponseFactory.from_domain_plan(change.plan),
         )
 
     @staticmethod

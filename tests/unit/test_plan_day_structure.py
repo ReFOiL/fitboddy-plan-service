@@ -702,6 +702,331 @@ def test_generate_next_monday_starts_on_monday() -> None:
         assert all(day["shown"] for day in body["days"])
 
 
+def _weekday(client: TestClient, base: str, headers: dict[str, str], day_index: int, day_of_week: int):
+    return client.post(
+        f"{base}/days/{day_index}/weekday",
+        headers=headers,
+        json={"day_of_week": day_of_week},
+    )
+
+
+def test_set_weekday_keeps_day_index_and_leaves_other_weeks() -> None:
+    client_user_id = "weekday_set_client"
+    trainer_user_id = "weekday_set_trainer"
+    base = _plan_base(client_user_id, trainer_user_id)
+    with _client() as client:
+        _install_test_stubs()
+        _empty_plan(client, client_user_id, trainer_user_id, "2026-10-21")
+        headers = _headers(trainer_user_id)
+        exercise = _create_exercise(client, trainer_user_id)
+        other = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=headers,
+            json={**_MARKER_EXERCISE, "exercise_name": "Weekday Other Press"},
+        )
+        assert other.status_code == 201, other.text
+        wednesday = client.post(
+            f"{base}/days",
+            headers=headers,
+            json={"week": 1, "day_of_week": 2, "scheduled_time": "18:00"},
+        )
+        assert wednesday.status_code == 201, wednesday.text
+        slotted = client.post(
+            f"{base}/days/1/exercises",
+            headers=headers,
+            json={"exercise_id": exercise["row_id"], "sets": 3, "reps": 8, "note": "держать"},
+        )
+        assert slotted.status_code == 201, slotted.text
+        line_id = slotted.json()["exercises"][0]["line_id"]
+        friday = client.post(f"{base}/days", headers=headers, json={"week": 1, "day_of_week": 4, "scheduled_time": "07:00"})
+        assert friday.status_code == 201, friday.text
+        week_two = client.post(f"{base}/days", headers=headers, json={"week": 2, "day_of_week": 2})
+        assert week_two.status_code == 201, week_two.text
+        original = {item["day_index"]: item for item in week_two.json()["days"]}
+
+        moved = _weekday(client, base, headers, 1, 0)
+        assert moved.status_code == 200, moved.text
+        body = moved.json()
+        assert body["outcome"] == "set"
+        assert body["day_index"] == 1
+        assert body["day_of_week"] == 0
+        assert body["swapped_day_index"] is None
+        plan = body["plan"]
+        assert [item["day_index"] for item in plan["days"]] == [1, 2, 3]
+        day = _day(plan, 1)
+        assert day["day_id"] == original[1]["day_id"]
+        assert day["week"] == 1
+        assert day["day_of_week"] == 0
+        assert day["scheduled_for"] == "2026-10-26"
+        assert day["scheduled_time"] == "18:00"
+        assert day["exercises"][0]["line_id"] == line_id
+        assert day["exercises"][0]["note"] == "держать"
+        assert day["is_completed"] is False
+        assert _day(plan, 2)["day_id"] == original[2]["day_id"]
+        assert _day(plan, 2)["day_of_week"] == 4
+        assert _day(plan, 2)["scheduled_for"] == "2026-10-23"
+        assert _day(plan, 2)["scheduled_time"] == "07:00"
+        assert _day(plan, 3)["day_id"] == original[3]["day_id"]
+        assert _day(plan, 3)["week"] == 2
+        assert _day(plan, 3)["day_of_week"] == 2
+        assert _day(plan, 3)["scheduled_for"] == "2026-10-28"
+        assert plan["end_date"] == "2026-10-28"
+
+        same = _weekday(client, base, headers, 1, 0)
+        assert same.status_code == 422
+        assert same.json()["detail"] == "day is already on that weekday"
+        missing = _weekday(client, base, headers, 9, 1)
+        assert missing.status_code == 404
+        assert missing.json()["detail"] == "plan day not found"
+        invalid = _weekday(client, base, headers, 1, 7)
+        assert invalid.status_code == 422
+        denied = _weekday(client, base, _auth(client_user_id), 1, 1)
+        assert denied.status_code == 403
+        admin = _weekday(client, base, _auth("weekday_admin", role="platform_admin"), 1, 3)
+        assert admin.status_code == 200, admin.text
+        assert admin.json()["outcome"] == "set"
+        assert _day(admin.json()["plan"], 1)["day_index"] == 1
+        assert _day(admin.json()["plan"], 1)["day_of_week"] == 3
+        assert _day(admin.json()["plan"], 1)["scheduled_for"] == "2026-10-22"
+        assert _day(admin.json()["plan"], 1)["day_id"] == original[1]["day_id"]
+
+
+def test_swap_weekdays_keeps_slots_and_completion_on_day_index() -> None:
+    client_user_id = "weekday_swap_client"
+    trainer_user_id = "weekday_swap_trainer"
+    base = _plan_base(client_user_id, trainer_user_id)
+    with _client() as client:
+        _install_test_stubs()
+        _empty_plan(client, client_user_id, trainer_user_id, "2026-10-21")
+        headers = _headers(trainer_user_id)
+        upper = _create_exercise(client, trainer_user_id)
+        lower = client.post(
+            f"/api/v1/trainers/{trainer_user_id}/exercises",
+            headers=headers,
+            json={**_MARKER_EXERCISE, "exercise_name": "Weekday Lower Press", "workout_category": "lower"},
+        )
+        assert lower.status_code == 201, lower.text
+        monday = client.post(
+            f"{base}/days",
+            headers=headers,
+            json={"week": 1, "day_of_week": 0, "scheduled_time": "07:00"},
+        )
+        assert monday.status_code == 201, monday.text
+        wednesday = client.post(
+            f"{base}/days",
+            headers=headers,
+            json={"week": 1, "day_of_week": 2, "scheduled_time": "18:00"},
+        )
+        assert wednesday.status_code == 201, wednesday.text
+        friday = client.post(f"{base}/days", headers=headers, json={"week": 1, "day_of_week": 4})
+        assert friday.status_code == 201, friday.text
+        for day_index, exercise_id in ((1, upper["row_id"]), (2, lower.json()["row_id"])):
+            added = client.post(
+                f"{base}/days/{day_index}/exercises",
+                headers=headers,
+                json={"exercise_id": exercise_id, "sets": 3, "reps": 8},
+            )
+            assert added.status_code == 201, added.text
+        current = client.get(f"{base}/active", headers=headers)
+        assert current.status_code == 200, current.text
+        before = {item["day_index"]: item for item in current.json()["days"]}
+        monday_line = before[1]["exercises"][0]["line_id"]
+        wednesday_line = before[2]["exercises"][0]["line_id"]
+
+        completed = client.post(
+            "/api/v1/plans/me/days/2/complete",
+            headers=_auth(client_user_id),
+        )
+        assert completed.status_code == 200, completed.text
+        headers = _headers(trainer_user_id)
+
+        swapped = _weekday(client, base, headers, 2, 0)
+        assert swapped.status_code == 200, swapped.text
+        body = swapped.json()
+        assert body["outcome"] == "swap"
+        assert body["day_index"] == 2
+        assert body["day_of_week"] == 0
+        assert body["swapped_day_index"] == 1
+        plan = body["plan"]
+        assert [item["day_index"] for item in plan["days"]] == [1, 2, 3]
+        moved_wednesday = _day(plan, 2)
+        moved_monday = _day(plan, 1)
+        untouched = _day(plan, 3)
+        assert moved_wednesday["day_id"] == before[2]["day_id"]
+        assert moved_wednesday["day_of_week"] == 0
+        assert moved_wednesday["scheduled_for"] == "2026-10-26"
+        assert moved_wednesday["scheduled_time"] == "18:00"
+        assert moved_wednesday["is_completed"] is True
+        assert moved_wednesday["exercises"][0]["line_id"] == wednesday_line
+        assert moved_wednesday["exercises"][0]["exercise_id"] == lower.json()["row_id"]
+        assert moved_monday["day_id"] == before[1]["day_id"]
+        assert moved_monday["day_of_week"] == 2
+        assert moved_monday["scheduled_for"] == "2026-10-21"
+        assert moved_monday["scheduled_time"] == "07:00"
+        assert moved_monday["is_completed"] is False
+        assert moved_monday["exercises"][0]["line_id"] == monday_line
+        assert untouched["day_id"] == before[3]["day_id"]
+        assert untouched["day_of_week"] == 4
+        assert untouched["exercises"] == []
+
+        again = client.post("/api/v1/plans/me/days/2/complete", headers=_auth(client_user_id))
+        assert again.status_code == 409
+        finish_monday = client.post("/api/v1/plans/me/days/1/complete", headers=_auth(client_user_id))
+        assert finish_monday.status_code == 200, finish_monday.text
+        assert finish_monday.json()["day_index"] == 1
+        assert finish_monday.json()["scheduled_for"] == "2026-10-21"
+
+        # Пустой день тоже занимает день недели: обмен не копирует в него слоты.
+        headers = _headers(trainer_user_id)
+        swapped_empty = _weekday(client, base, headers, 3, 2)
+        assert swapped_empty.status_code == 200, swapped_empty.text
+        assert swapped_empty.json()["outcome"] == "swap"
+        assert swapped_empty.json()["swapped_day_index"] == 1
+        empty_plan = swapped_empty.json()["plan"]
+        assert _day(empty_plan, 3)["day_of_week"] == 2
+        assert _day(empty_plan, 3)["exercises"] == []
+        assert _day(empty_plan, 3)["day_id"] == before[3]["day_id"]
+        assert _day(empty_plan, 1)["day_of_week"] == 4
+        assert _day(empty_plan, 1)["exercises"][0]["line_id"] == monday_line
+        assert _day(empty_plan, 1)["is_completed"] is True
+        assert _day(empty_plan, 2)["is_completed"] is True
+        assert _day(empty_plan, 2)["day_of_week"] == 0
+
+
+def test_weekday_change_follows_next_workout_anchor_without_renumbering() -> None:
+    client_user_id = "weekday_anchor_client"
+    trainer_user_id = "weekday_anchor_trainer"
+    base = _plan_base(client_user_id, trainer_user_id)
+    friday = date(2026, 10, 23)
+    with _client() as client:
+        _install_test_stubs()
+        _link(client_user_id, trainer_user_id)
+        with patch("application.use_cases.date") as mocked_date:
+            mocked_date.today.return_value = friday
+            created = client.post(
+                f"{base}/active",
+                headers=_headers(trainer_user_id),
+                json={
+                    "goal": "maintenance",
+                    "level": "intermediate",
+                    "workouts_per_week": 2,
+                    "day_count": 0,
+                    "start_date": "2026-10-23",
+                },
+            )
+            assert created.status_code == 201, created.text
+            headers = _headers(trainer_user_id)
+            added = client.post(f"{base}/days", headers=headers, json={"week": 1, "day_of_week": 4})
+            assert added.status_code == 201, added.text
+            issued = client.patch(
+                f"{base}/start",
+                headers=headers,
+                json={"start_mode": "next_workout", "start_date": "2026-10-23"},
+            )
+            assert issued.status_code == 200, issued.text
+            assert issued.json()["start_date"] == "2026-10-23"
+            day_id = issued.json()["days"][0]["day_id"]
+
+            # Пятница была единственным слотом. Понедельник ещё не наступил — якорь уезжает на него.
+            moved = _weekday(client, base, headers, 1, 0)
+            assert moved.status_code == 200, moved.text
+            body = moved.json()
+            assert body["outcome"] == "set"
+            plan = body["plan"]
+            assert plan["start_date"] == "2026-10-26"
+            assert _day(plan, 1)["day_id"] == day_id
+            assert _day(plan, 1)["day_index"] == 1
+            assert _day(plan, 1)["week"] == 1
+            assert _day(plan, 1)["day_of_week"] == 0
+            assert _day(plan, 1)["scheduled_for"] == "2026-10-26"
+
+            exercise = _create_exercise(client, trainer_user_id)
+            slotted = client.post(
+                f"{base}/days/1/exercises",
+                headers=headers,
+                json={"exercise_id": exercise["row_id"], "sets": 2, "reps": 5},
+            )
+            assert slotted.status_code == 201, slotted.text
+            mocked_date.today.return_value = date(2026, 10, 26)
+            completed = client.post("/api/v1/plans/me/days/1/complete", headers=_auth(client_user_id))
+            assert completed.status_code == 200, completed.text
+            headers = _headers(trainer_user_id)
+            later_week = client.post(f"{base}/days", headers=headers, json={"week": 2, "day_of_week": 4})
+            assert later_week.status_code == 201, later_week.text
+            second_id = _day(later_week.json(), 2)["day_id"]
+            assert _day(later_week.json(), 1)["scheduled_for"] == "2026-10-26"
+            assert _day(later_week.json(), 2)["scheduled_for"] == "2026-11-06"
+
+            # Завершённый день держит якорь: сдвиг другой недели не переписывает его дату.
+            later = _weekday(client, base, headers, 2, 5)
+            assert later.status_code == 200, later.text
+            assert later.json()["outcome"] == "set"
+            anchored = later.json()["plan"]
+            assert anchored["start_date"] == "2026-10-26"
+            assert _day(anchored, 1)["day_index"] == 1
+            assert _day(anchored, 1)["is_completed"] is True
+            assert _day(anchored, 1)["scheduled_for"] == "2026-10-26"
+            assert _day(anchored, 1)["day_of_week"] == 0
+            assert _day(anchored, 2)["day_index"] == 2
+            assert _day(anchored, 2)["day_of_week"] == 5
+            assert _day(anchored, 2)["scheduled_for"] == "2026-11-07"
+            assert _day(anchored, 2)["day_id"] == second_id
+
+
+def test_weekday_change_updates_shown_and_swaps_inside_one_week() -> None:
+    client_user_id = "weekday_shown_client"
+    trainer_user_id = "weekday_shown_trainer"
+    base = _plan_base(client_user_id, trainer_user_id)
+    with _client() as client:
+        _install_test_stubs()
+        _empty_plan(client, client_user_id, trainer_user_id, "2026-10-21")
+        headers = _headers(trainer_user_id)
+        anchored = client.patch(
+            f"{base}/start",
+            headers=headers,
+            json={"start_mode": "date", "start_date": "2026-10-21"},
+        )
+        assert anchored.status_code == 200, anchored.text
+        monday = client.post(f"{base}/days", headers=headers, json={"week": 1, "day_of_week": 0, "scheduled_time": "09:00"})
+        assert monday.status_code == 201, monday.text
+        wednesday = client.post(f"{base}/days", headers=headers, json={"week": 1, "day_of_week": 2})
+        assert wednesday.status_code == 201, wednesday.text
+        hidden = _day(wednesday.json(), 1)
+        visible = _day(wednesday.json(), 2)
+        assert hidden["scheduled_for"] == "2026-10-19"
+        assert hidden["shown"] is False
+        assert visible["scheduled_for"] == "2026-10-21"
+        assert visible["shown"] is True
+
+        revealed = _weekday(client, base, headers, hidden["day_index"], 3)
+        assert revealed.status_code == 200, revealed.text
+        assert revealed.json()["outcome"] == "set"
+        plan = revealed.json()["plan"]
+        assert plan["start_date"] == "2026-10-21"
+        assert _day(plan, 1)["day_id"] == hidden["day_id"]
+        assert _day(plan, 1)["day_of_week"] == 3
+        assert _day(plan, 1)["scheduled_for"] == "2026-10-22"
+        assert _day(plan, 1)["shown"] is True
+        assert _day(plan, 1)["scheduled_time"] == "09:00"
+        assert _day(plan, 2)["day_of_week"] == 2
+        assert _day(plan, 2)["shown"] is True
+
+        swapped = _weekday(client, base, headers, 2, 3)
+        assert swapped.status_code == 200, swapped.text
+        assert swapped.json()["outcome"] == "swap"
+        assert swapped.json()["swapped_day_index"] == 1
+        exchanged = swapped.json()["plan"]
+        assert exchanged["start_date"] == "2026-10-21"
+        assert _day(exchanged, 1)["day_of_week"] == 2
+        assert _day(exchanged, 1)["scheduled_for"] == "2026-10-21"
+        assert _day(exchanged, 1)["scheduled_time"] == "09:00"
+        assert _day(exchanged, 1)["shown"] is True
+        assert _day(exchanged, 2)["day_of_week"] == 3
+        assert _day(exchanged, 2)["scheduled_for"] == "2026-10-22"
+        assert _day(exchanged, 2)["scheduled_time"] is None
+        assert _day(exchanged, 2)["day_id"] == visible["day_id"]
+
+
 def test_note_and_schedule_migration_is_reversible(tmp_path: Path, monkeypatch) -> None:
     database_path = tmp_path / "migration.db"
     url = f"sqlite+pysqlite:///{database_path.as_posix()}"
