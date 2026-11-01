@@ -4,6 +4,7 @@ import io
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from uuid import uuid4
 
@@ -19,6 +20,7 @@ from application.errors import (  # type: ignore[import-not-found]
     UnsupportedMediaTypeError,
 )
 from application.media_keys import is_internal_media_key, is_safe_object_key, normalize_stored_media
+from application.photo_normalize import normalize_photo
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +76,16 @@ def validate_photo_bytes(filename: str, data: bytes, *, max_bytes: int) -> tuple
     if detected != declared:
         raise UnsupportedMediaTypeError("photo content does not match the file extension")
     return extension, declared
+
+
+def prepare_photo_upload(filename: str, data: bytes, *, max_bytes: int) -> tuple[bytes, str, str]:
+    """Проверить лимит и тип, затем вернуть уже нормализованные байты фото.
+
+    Расширение и content-type относятся к файлу, который ляжет в хранилище,
+    а не к исходному имени загрузки.
+    """
+    _extension, declared = validate_photo_bytes(filename, data, max_bytes=max_bytes)
+    return normalize_photo(data, declared)
 
 
 def copy_or_share(
@@ -143,9 +155,12 @@ class S3MediaStorage:
         data: bytes,
         position: str,
     ) -> str:
-        ext, content_type = validate_photo_bytes(filename, data, max_bytes=self.max_photo_size_bytes)
+        # В бакет кладём перекодированный кадр, а не сырой upload.
+        normalized, ext, content_type = await anyio.to_thread.run_sync(
+            partial(prepare_photo_upload, filename, data, max_bytes=self.max_photo_size_bytes),
+        )
         object_name = self._new_object_name(f"{self.photos_prefix}{owner_id}/{row_id}/{position}/", ext)
-        await anyio.to_thread.run_sync(self._put_object_sync, object_name, data, content_type)
+        await anyio.to_thread.run_sync(self._put_object_sync, object_name, normalized, content_type)
         return object_name
 
     def copy_owned(self, source_key: str, *, owner_id: str, row_id: str, slot: str) -> str:
