@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 from datetime import date
 from unittest.mock import patch
@@ -1858,27 +1859,34 @@ class _ObjectStorage:
         self.objects: dict[str, bytes] = {}
         self.deleted: list[str] = []
         self._seq = 0
+        self._lock = threading.Lock()
 
     async def upload_photo(self, *, owner_id: str, row_id: str, filename: str, data: bytes, position: str) -> str:
-        self._seq += 1
-        suffix = filename.rsplit(".", 1)[-1] if "." in filename else "jpg"
-        key = f"photos/{owner_id}/{row_id}/{position}/obj{self._seq}.{suffix}"
-        self.objects[key] = data
-        return key
+        with self._lock:
+            self._seq += 1
+            suffix = filename.rsplit(".", 1)[-1] if "." in filename else "jpg"
+            key = f"photos/{owner_id}/{row_id}/{position}/obj{self._seq}.{suffix}"
+            self.objects[key] = data
+            return key
 
     def copy_owned(self, source_key: str, *, owner_id: str, row_id: str, slot: str) -> str:
-        self._seq += 1
-        ext = source_key.rsplit(".", 1)[-1]
-        if slot == "video":
-            dest = f"videos/{owner_id}/{row_id}/copy{self._seq}.{ext}"
-        else:
-            dest = f"photos/{owner_id}/{row_id}/{slot}/copy{self._seq}.{ext}"
-        self.objects[dest] = self.objects[source_key]
-        return dest
+        with self._lock:
+            self._seq += 1
+            ext = source_key.rsplit(".", 1)[-1]
+            if slot == "video":
+                dest = f"videos/{owner_id}/{row_id}/copy{self._seq}.{ext}"
+            else:
+                dest = f"photos/{owner_id}/{row_id}/{slot}/copy{self._seq}.{ext}"
+            self.objects[dest] = self.objects[source_key]
+            return dest
+
+    def delete_media_sync(self, object_name: str) -> None:
+        with self._lock:
+            self.deleted.append(object_name)
+            self.objects.pop(object_name, None)
 
     async def delete_media(self, object_name: str) -> None:
-        self.deleted.append(object_name)
-        self.objects.pop(object_name, None)
+        self.delete_media_sync(object_name)
 
     async def download_media(self, object_name: str) -> tuple[bytes, str]:
         if object_name not in self.objects:

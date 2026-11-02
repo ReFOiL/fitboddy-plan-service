@@ -2,6 +2,7 @@ import hashlib
 import logging
 import time
 
+import anyio
 from fastapi import HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 
@@ -541,11 +542,15 @@ class PlanHttpHandler:
     ) -> ApplyCatalogSyncResponse:
         try:
             self._require_self_trainer(authorization, trainer_user_id)
-            with self._runtime.plan_service_scope() as plan_service:
-                result = plan_service.apply_catalog_sync(
-                    self._request_factory.to_apply_catalog_sync_command(trainer_user_id, payload)
-                )
-            await self._release_media_keys(list(result.replaced_media_keys), owner_id=trainer_user_id)
+
+            def _apply():
+                # Копии S3 идут в пуле потоков и не должны занимать event loop.
+                with self._runtime.plan_service_scope() as plan_service:
+                    return plan_service.apply_catalog_sync(
+                        self._request_factory.to_apply_catalog_sync_command(trainer_user_id, payload)
+                    )
+
+            result = await anyio.to_thread.run_sync(_apply)
             return ApplyCatalogSyncResponse(
                 added_count=len(result.added_ids),
                 updated_count=len(result.updated_ids),
@@ -755,7 +760,7 @@ class PlanHttpHandler:
                 with self._runtime.plan_service_scope() as plan_service:
                     _, previous = plan_service.set_trainer_exercise_video_url(trainer_user_id, row_id, object_key)
             except Exception:
-                await self._delete_uploaded_object(storage, object_key)
+                await self._delete_uploaded_object(storage, object_key, owner_id=trainer_user_id)
                 raise
             await self._release_replaced_media(storage, previous=previous, new_key=object_key, owner_id=trainer_user_id)
             return ExerciseVideoUploadResponse(
@@ -820,7 +825,7 @@ class PlanHttpHandler:
                         object_key,
                     )
             except Exception:
-                await self._delete_uploaded_object(storage, object_key)
+                await self._delete_uploaded_object(storage, object_key, owner_id=trainer_user_id)
                 raise
             await self._release_replaced_media(storage, previous=previous, new_key=object_key, owner_id=trainer_user_id)
             return ExercisePhotoUploadResponse(
@@ -1027,7 +1032,7 @@ class PlanHttpHandler:
                 with self._runtime.plan_service_scope() as plan_service:
                     _, previous = plan_service.set_platform_exercise_video_url(row_id, object_key)
             except Exception:
-                await self._delete_uploaded_object(storage, object_key)
+                await self._delete_uploaded_object(storage, object_key, owner_id=PLATFORM_MEDIA_OWNER)
                 raise
             await self._release_replaced_media(
                 storage,
@@ -1081,7 +1086,7 @@ class PlanHttpHandler:
                 with self._runtime.plan_service_scope() as plan_service:
                     _, previous = plan_service.set_platform_exercise_photo_url(row_id, photo_position, object_key)
             except Exception:
-                await self._delete_uploaded_object(storage, object_key)
+                await self._delete_uploaded_object(storage, object_key, owner_id=PLATFORM_MEDIA_OWNER)
                 raise
             await self._release_replaced_media(
                 storage,
@@ -1503,12 +1508,21 @@ class PlanHttpHandler:
             await storage.delete_media(object_key)
         except Exception:
             logger.exception("failed to delete media object key=%s", object_key)
+            self._remember_failed_media_delete(object_key, owner_id)
 
-    async def _delete_uploaded_object(self, storage, object_key: str) -> None:
+    def _remember_failed_media_delete(self, object_key: str, owner_id: str) -> None:
+        try:
+            with self._runtime.plan_service_scope() as plan_service:
+                plan_service.remember_failed_media_delete(object_key, owner_id, reason="delete failed")
+        except Exception:
+            logger.exception("failed to queue media delete key=%s", object_key)
+
+    async def _delete_uploaded_object(self, storage, object_key: str, *, owner_id: str) -> None:
         try:
             await storage.delete_media(object_key)
         except Exception:
             logger.exception("failed to delete uploaded media after database error key=%s", object_key)
+            self._remember_failed_media_delete(object_key, owner_id)
 
     async def _open_stored_media(self, storage, object_key: str) -> OpenedMedia:
         opener = getattr(storage, "open_media", None)
