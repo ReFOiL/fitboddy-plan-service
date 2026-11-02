@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from application.catalog_clone import clone_platform_catalog
 from application.generation.contracts import AbstractCatalogProvider
 from application.generation.models import ExerciseCandidate, PlanGenerationInput
 from application.generation.providers.candidate_mapping import exercise_row_to_candidate
-from application.media_storage import S3MediaStorage, copy_or_share
+from application.media_storage import S3MediaStorage
 from application.repositories import PlatformExerciseRepository, TrainerExerciseRepository
 
 
@@ -12,6 +13,7 @@ class TrainerCatalogProvider(AbstractCatalogProvider):
 
     При первом обращении клонирует активные упражнения из платформенной базы
     (`platform_exercises`). Пустая база бутстрапится из bootstrap-провайдера.
+    Копии медиа считаются вне транзакции БД.
     """
 
     def __init__(
@@ -32,17 +34,11 @@ class TrainerCatalogProvider(AbstractCatalogProvider):
         trainer_exercises = self._trainer_repo.list_by_trainer(request.trainer_user_id)
         if not trainer_exercises:
             platform_rows = self._platform_repo.bootstrap_if_empty(self._bootstrap_provider.list_exercises(request))
-            trainer_user_id = request.trainer_user_id
-            trainer_exercises = self._trainer_repo.clone_from_platform(
-                trainer_user_id,
+            trainer_exercises = clone_platform_catalog(
+                self._trainer_repo.session,
+                self._media_storage,
+                request.trainer_user_id,
                 platform_rows,
-                copy_media=lambda source, row_id, slot: copy_or_share(
-                    self._media_storage,
-                    source,
-                    owner_id=trainer_user_id,
-                    row_id=row_id,
-                    slot=slot,
-                ),
             )
 
         return [

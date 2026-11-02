@@ -1,23 +1,108 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from uuid import uuid4
+from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session
 
-from application.media_keys import normalize_stored_media
 from application.models import PlatformExerciseModel, TrainerExerciseModel
 from application.repositories.exercise_muscles import ExerciseMuscleRepository
 
-# (исходное значение, row_id клона, слот video|start|end) -> значение для БД
-MediaCopier = Callable[[str | None, str, str], str | None]
+
+@dataclass(frozen=True, slots=True)
+class TrainerCloneDraft:
+    """Готовая строка каталога тренера. Медиа уже разрешено до INSERT."""
+
+    row_id: str
+    trainer_user_id: str
+    source_platform_exercise_id: str
+    exercise_name: str
+    description: str | None
+    equipment: str
+    is_cardio: bool
+    difficulty: int
+    workout_category: str
+    is_hold: bool
+    default_sets: int
+    default_reps: int | None
+    default_duration_seconds: int | None
+    default_rest_seconds: int
+    default_weight_kg: float | None
+    load_scheme: str
+    scheme_steps_json: str | None
+    video_url: str | None = None
+    start_image_url: str | None = None
+    end_image_url: str | None = None
+    synced_video_key: str | None = None
+    synced_start_image_key: str | None = None
+    synced_end_image_key: str | None = None
+    is_active: bool = True
+
+    @classmethod
+    def from_platform(
+        cls,
+        model: PlatformExerciseModel,
+        *,
+        trainer_user_id: str,
+        row_id: str,
+    ) -> TrainerCloneDraft:
+        return cls(
+            row_id=row_id,
+            trainer_user_id=trainer_user_id,
+            source_platform_exercise_id=model.row_id,
+            exercise_name=model.exercise_name,
+            description=model.description,
+            equipment=model.equipment,
+            is_cardio=bool(model.is_cardio),
+            difficulty=int(model.difficulty),
+            workout_category=model.workout_category,
+            is_hold=bool(model.is_hold),
+            default_sets=int(model.default_sets),
+            default_reps=model.default_reps,
+            default_duration_seconds=model.default_duration_seconds,
+            default_rest_seconds=int(model.default_rest_seconds),
+            default_weight_kg=model.default_weight_kg,
+            load_scheme=model.load_scheme or "flat",
+            scheme_steps_json=model.scheme_steps_json,
+        )
+
+    def insert_mapping(self) -> dict[str, object]:
+        return {
+            "row_id": self.row_id,
+            "trainer_user_id": self.trainer_user_id,
+            "source_platform_exercise_id": self.source_platform_exercise_id,
+            "exercise_name": self.exercise_name,
+            "description": self.description,
+            "equipment": self.equipment,
+            "is_cardio": self.is_cardio,
+            "difficulty": self.difficulty,
+            "workout_category": self.workout_category,
+            "is_hold": self.is_hold,
+            "default_sets": self.default_sets,
+            "default_reps": self.default_reps,
+            "default_duration_seconds": self.default_duration_seconds,
+            "default_rest_seconds": self.default_rest_seconds,
+            "default_weight_kg": self.default_weight_kg,
+            "load_scheme": self.load_scheme,
+            "scheme_steps_json": self.scheme_steps_json,
+            "video_url": self.video_url,
+            "start_image_url": self.start_image_url,
+            "end_image_url": self.end_image_url,
+            "synced_video_key": self.synced_video_key,
+            "synced_start_image_key": self.synced_start_image_key,
+            "synced_end_image_key": self.synced_end_image_key,
+            "is_active": self.is_active,
+        }
 
 
 class TrainerExerciseRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
         self._muscles = ExerciseMuscleRepository(session)
+
+    @property
+    def session(self) -> Session:
+        return self._session
 
     def list_by_trainer(self, trainer_user_id: str, *, include_archived: bool = False) -> list[TrainerExerciseModel]:
         statement = select(TrainerExerciseModel).where(TrainerExerciseModel.trainer_user_id == trainer_user_id)
@@ -76,75 +161,18 @@ class TrainerExerciseRepository:
         self._session.flush()
         return model
 
-    def clone_from_platform(
-        self,
-        trainer_user_id: str,
-        platform_rows: list[PlatformExerciseModel],
-        copy_media: MediaCopier | None = None,
-    ) -> list[TrainerExerciseModel]:
-        """Клонировать базовый каталог платформы в каталог тренера (один раз).
+    def insert_clones(self, drafts: list[TrainerCloneDraft]) -> None:
+        """Вставить клоны одним INSERT и скопировать мышцы одним SELECT/INSERT.
 
-        Медиа копируется в префикс тренера, если передан ``copy_media``.
-        Иначе в строку попадает нормализованный ключ исходного объекта.
-        Каждая строка хранит ``source_platform_exercise_id`` и ключи медиа,
-        с которых снята копия, чтобы мягкая синхронизация не путала копию с правкой.
+        Ключи медиа уже должны быть посчитаны: этот метод не ходит в хранилище.
         """
-        existing = self.list_by_trainer(trainer_user_id, include_archived=True)
-        if existing:
-            return self.list_by_trainer(trainer_user_id)
-
-        for item in platform_rows:
-            self.clone_one(trainer_user_id, item, copy_media=copy_media, include_media=True)
-        self._session.flush()
-        return self.list_by_trainer(trainer_user_id)
-
-    def clone_one(
-        self,
-        trainer_user_id: str,
-        item: PlatformExerciseModel,
-        *,
-        copy_media: MediaCopier | None = None,
-        include_media: bool,
-    ) -> TrainerExerciseModel:
-        trainer_row_id = str(uuid4())
-
-        def _stored(value: str | None, slot: str) -> str | None:
-            if not include_media:
-                return None
-            if copy_media is not None:
-                return copy_media(value, trainer_row_id, slot)
-            return normalize_stored_media(value)
-
-        model = TrainerExerciseModel(
-            row_id=trainer_row_id,
-            trainer_user_id=trainer_user_id,
-            source_platform_exercise_id=item.row_id,
-            exercise_name=item.exercise_name,
-            description=item.description,
-            equipment=item.equipment,
-            is_cardio=item.is_cardio,
-            difficulty=item.difficulty,
-            workout_category=item.workout_category,
-            is_hold=item.is_hold,
-            default_sets=item.default_sets,
-            default_reps=item.default_reps,
-            default_duration_seconds=item.default_duration_seconds,
-            default_rest_seconds=item.default_rest_seconds,
-            default_weight_kg=item.default_weight_kg,
-            load_scheme=item.load_scheme or "flat",
-            scheme_steps_json=item.scheme_steps_json,
-            video_url=_stored(item.video_url, "video"),
-            start_image_url=_stored(item.start_image_url, "start"),
-            end_image_url=_stored(item.end_image_url, "end"),
-            synced_video_key=normalize_stored_media(item.video_url) if include_media else None,
-            synced_start_image_key=normalize_stored_media(item.start_image_url) if include_media else None,
-            synced_end_image_key=normalize_stored_media(item.end_image_url) if include_media else None,
-            is_active=True,
+        if not drafts:
+            return
+        self._session.execute(insert(TrainerExerciseModel), [draft.insert_mapping() for draft in drafts])
+        self._muscles.copy_platform_muscles_bulk(
+            [
+                (draft.source_platform_exercise_id, draft.row_id)
+                for draft in drafts
+                if draft.source_platform_exercise_id
+            ]
         )
-        self._session.add(model)
-        self._session.flush()
-        self._muscles.copy_platform_muscles_to_trainer(
-            platform_exercise_id=item.row_id,
-            trainer_exercise_id=trainer_row_id,
-        )
-        return model

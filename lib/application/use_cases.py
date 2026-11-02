@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import logging
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
 from uuid import uuid4
 
-from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from application.catalog_clone import clone_platform_catalog
 from application.catalog_sync import (
     MEDIA_SLOTS,
     CatalogSyncApplyResult,
@@ -66,8 +65,16 @@ from application.errors import (
     TrainerExerciseNotFoundError,
     ValidationError,
 )
-from application.media_keys import media_key_variants, normalize_stored_media
-from application.media_storage import S3MediaStorage, copy_or_share
+from application.media_deletes import (
+    discard_copied_objects,
+    drain_pending_media_deletes,
+    enqueue_pending_media_deletes,
+    media_reference_count,
+    release_read_transaction,
+    remember_failed_media_deletes,
+)
+from application.media_keys import media_key_owned_by, normalize_stored_media
+from application.media_storage import MediaCopyJob, MediaCopyResult, S3MediaStorage, run_media_copies
 from application.models import (
     PlanDayModel,
     PlanExerciseModel,
@@ -94,6 +101,7 @@ from application.repositories import (
     TrainingPlanRepository,
 )
 from application.repositories.exercise_muscles import ExerciseMuscleRepository
+from application.repositories.trainer_exercise import TrainerCloneDraft
 from application.repositories.serialization import dumps_set_prescriptions, parse_scheme_steps, parse_set_prescriptions
 from application.weight_prescription import build_prescriptions, rescale_plan_line_weights
 from domain.entities import (
@@ -115,7 +123,6 @@ from domain.value_objects import TrainingGoal, TrainingLevel, WorkoutLocation
 
 _ALLOWED_LOAD_SCHEMES = {"flat", "ascending", "descending", "custom"}
 _MAX_SYNC_IDS = 500
-logger = logging.getLogger(__name__)
 
 
 class PlanService:
@@ -954,58 +961,95 @@ class PlanService:
         update_set = {item.platform_exercise_id for item in plan.update}
         self._validate_catalog_sync_selection(add_ids, update_ids, add_set, links, platform_by_id)
 
-        copied: list[str] = []
-        replaced: list[str] = []
+        # Снимок и задания на копирование собираем, пока ORM ещё живой.
+        # Дальше транзакцию закрываем и только потом ходим в S3.
+        jobs: list[MediaCopyJob] = []
+        planned_adds: list[_PlannedAdd] = []
+        planned_updates: list[_PlannedUpdate] = []
+        owner_id = command.trainer_user_id
+        for platform_id in add_ids:
+            if platform_id not in add_set:
+                continue
+            source = platform_by_id[platform_id]
+            row_id = str(uuid4())
+            draft = TrainerCloneDraft.from_platform(source, trainer_user_id=owner_id, row_id=row_id)
+            slots: list[_SlotCopy] = []
+            if command.include_media:
+                for field, synced_field, slot_name in MEDIA_SLOTS:
+                    slots.append(
+                        _schedule_media_slot(
+                            jobs,
+                            source=getattr(source, field),
+                            owner_id=owner_id,
+                            row_id=row_id,
+                            field=field,
+                            synced_field=synced_field,
+                            slot=slot_name,
+                        )
+                    )
+            planned_adds.append(_PlannedAdd(platform_id=platform_id, draft=draft, slots=tuple(slots)))
+        for platform_id in update_ids:
+            link = links[platform_id]
+            if platform_id not in update_set:
+                continue
+            source = platform_by_id[platform_id]
+            changed = set(link.changed_fields)
+            slots = []
+            for field, synced_field, slot_name in MEDIA_SLOTS:
+                if field not in changed:
+                    continue
+                slots.append(
+                    _schedule_media_slot(
+                        jobs,
+                        source=getattr(source, field),
+                        owner_id=owner_id,
+                        row_id=link.trainer_exercise_id,
+                        field=field,
+                        synced_field=synced_field,
+                        slot=slot_name,
+                    )
+                )
+            planned_updates.append(
+                _PlannedUpdate(
+                    platform_id=platform_id,
+                    trainer_exercise_id=link.trainer_exercise_id,
+                    slots=tuple(slots),
+                )
+            )
+
+        release_read_transaction(self._session)
+        drain_pending_media_deletes(self._session, self._media_storage)
+        results = run_media_copies(self._media_storage, jobs)
+        created = [result.created_key for result in results if result.created_key]
+
         added: list[str] = []
         updated: list[str] = []
-
-        def _copy(source: str | None, row_id: str, slot: str) -> str | None:
-            before = normalize_stored_media(source)
-            stored = copy_or_share(
-                self._media_storage,
-                source,
-                owner_id=command.trainer_user_id,
-                row_id=row_id,
-                slot=slot,
-            )
-            if stored and before and stored != before:
-                copied.append(stored)
-            return stored
-
+        replaced: list[str] = []
         try:
+            drafts = [_draft_with_media(item.draft, item.slots, results) for item in planned_adds]
+            self._trainer_exercises.insert_clones(drafts)
             for platform_id in add_ids:
                 if platform_id in add_set:
-                    self._trainer_exercises.clone_one(
-                        command.trainer_user_id,
-                        platform_by_id[platform_id],
-                        copy_media=_copy,
-                        include_media=command.include_media,
-                    )
                     added.append(platform_id)
                     continue
-                self._stamp_catalog_link(command.trainer_user_id, links[platform_id].trainer_exercise_id, platform_id)
+                self._stamp_catalog_link(owner_id, links[platform_id].trainer_exercise_id, platform_id)
             for platform_id in update_ids:
-                link = links[platform_id]
-                if platform_id not in update_set:
-                    self._stamp_catalog_link(command.trainer_user_id, link.trainer_exercise_id, platform_id)
+                if platform_id in update_set:
                     continue
-                if self._copy_changed_platform_media(
-                    command.trainer_user_id,
-                    link.trainer_exercise_id,
-                    platform_by_id[platform_id],
-                    _copy,
-                    replaced,
-                ):
-                    updated.append(platform_id)
+                link = links[platform_id]
+                self._stamp_catalog_link(owner_id, link.trainer_exercise_id, platform_id)
+            for item in planned_updates:
+                if self._apply_prepared_media(owner_id, item, results, replaced):
+                    updated.append(item.platform_id)
+            enqueue_pending_media_deletes(self._session, ((key, owner_id) for key in replaced))
             self._session.commit()
         except IntegrityError as exc:
-            self._session.rollback()
-            self._discard_copied_media(copied)
+            discard_copied_objects(self._session, self._media_storage, created, owner_id=owner_id)
             raise ConflictError("catalog sync conflicted with an existing exercise link") from exc
         except Exception:
-            self._session.rollback()
-            self._discard_copied_media(copied)
+            discard_copied_objects(self._session, self._media_storage, created, owner_id=owner_id)
             raise
+        drain_pending_media_deletes(self._session, self._media_storage)
         return CatalogSyncApplyResult(
             added_ids=tuple(added),
             updated_ids=tuple(updated),
@@ -1049,35 +1093,52 @@ class PlanService:
         if model.source_platform_exercise_id is None:
             model.source_platform_exercise_id = platform_id
 
-    def _copy_changed_platform_media(
+    def _apply_prepared_media(
         self,
         trainer_user_id: str,
-        trainer_exercise_id: str,
-        platform: PlatformExerciseModel,
-        copy_media,
+        planned: _PlannedUpdate,
+        results: list[MediaCopyResult],
         replaced: list[str],
     ) -> bool:
-        model = self._trainer_exercises.lock_for_media_update(trainer_user_id, trainer_exercise_id)
+        model = self._trainer_exercises.lock_for_media_update(trainer_user_id, planned.trainer_exercise_id)
         if model is None:
             raise TrainerExerciseNotFoundError("trainer exercise not found")
         changed = False
-        for field, synced_field, slot in MEDIA_SLOTS:
-            platform_key = normalize_stored_media(getattr(platform, field))
-            synced_key = normalize_stored_media(getattr(model, synced_field))
-            if platform_key is None or platform_key == synced_key:
-                continue
-            new_value = copy_media(getattr(platform, field), model.row_id, slot)
-            previous = getattr(model, field)
-            previous_key = normalize_stored_media(previous)
+        for slot in planned.slots:
+            created = None if slot.job_index is None else results[slot.job_index].created_key
+            new_value = None if slot.job_index is None else results[slot.job_index].stored
             new_key = normalize_stored_media(new_value)
-            if previous_key and previous_key != new_key:
-                replaced.append(previous)
-            setattr(model, field, new_value)
-            setattr(model, synced_field, platform_key)
+            synced_key = normalize_stored_media(getattr(model, slot.synced_field))
+            if slot.platform_key is None or slot.platform_key == synced_key:
+                if created and self._media_key_deletable(created, trainer_user_id):
+                    replaced.append(created)
+                continue
+            previous_key = normalize_stored_media(getattr(model, slot.field))
+            if previous_key and previous_key != new_key and self._media_key_deletable(previous_key, trainer_user_id):
+                replaced.append(previous_key)
+            setattr(model, slot.field, new_value)
+            setattr(model, slot.synced_field, slot.platform_key)
             changed = True
         if model.source_platform_exercise_id is None:
-            model.source_platform_exercise_id = platform.row_id
+            model.source_platform_exercise_id = planned.platform_id
         return changed
+
+    def _media_key_deletable(self, object_key: str, owner_id: str) -> bool:
+        normalized = normalize_stored_media(object_key)
+        if normalized is None:
+            return False
+        storage = self._media_storage
+        photos_prefix = getattr(storage, "photos_prefix", "photos/") or "photos/"
+        videos_prefix = getattr(storage, "videos_prefix", "videos/") or "videos/"
+        return media_key_owned_by(
+            normalized,
+            owner_id,
+            photos_prefix=photos_prefix,
+            videos_prefix=videos_prefix,
+        )
+
+    def remember_failed_media_delete(self, object_key: str, owner_id: str, *, reason: str) -> None:
+        remember_failed_media_deletes(self._session, [(object_key, owner_id)], last_error=reason)
 
     def list_client_loads(self, command: ListClientLoadsCommand) -> list[ClientExerciseLoad]:
         rows = self._client_loads.list_for_client_trainer(command.client_user_id, command.trainer_user_id)
@@ -1570,18 +1631,7 @@ class PlanService:
 
     def media_key_reference_count(self, object_key: str) -> int:
         """Сколько строк упражнений всё ещё ссылаются на ключ (включая старый URL)."""
-        variants = media_key_variants(object_key)
-        if not variants:
-            return 0
-        total = 0
-        for model in (TrainerExerciseModel, PlatformExerciseModel):
-            predicate = or_(
-                model.video_url.in_(variants),
-                model.start_image_url.in_(variants),
-                model.end_image_url.in_(variants),
-            )
-            total += int(self._session.scalar(select(func.count()).select_from(model).where(predicate)) or 0)
-        return total
+        return media_reference_count(self._session, object_key)
 
     @staticmethod
     def _photo_url_field(position: str) -> str:
@@ -2188,39 +2238,62 @@ class PlanService:
         if existing:
             return
         platform_rows = self._ensure_platform_catalog_baseline()
-        copied: list[str] = []
+        clone_platform_catalog(self._session, self._media_storage, trainer_user_id, platform_rows)
 
-        def _copy(source: str | None, row_id: str, slot: str) -> str | None:
-            before = normalize_stored_media(source)
-            stored = copy_or_share(
-                self._media_storage,
-                source,
-                owner_id=trainer_user_id,
-                row_id=row_id,
-                slot=slot,
-            )
-            # Удалять при откате можно только новый объект, не общий ключ платформы.
-            if stored and before and stored != before:
-                copied.append(stored)
-            return stored
 
-        try:
-            self._trainer_exercises.clone_from_platform(trainer_user_id, platform_rows, copy_media=_copy)
-            self._session.commit()
-        except Exception:
-            self._session.rollback()
-            self._discard_copied_media(copied)
-            raise
+@dataclass(frozen=True, slots=True)
+class _SlotCopy:
+    field: str
+    synced_field: str
+    platform_key: str | None
+    job_index: int | None
 
-    def _discard_copied_media(self, keys: list[str]) -> None:
-        storage = self._media_storage
-        if storage is None:
-            return
-        for key in keys:
-            try:
-                storage.delete_media_sync(key)
-            except Exception:
-                logger.exception("failed to delete media copied during a rolled-back clone key=%s", key)
+
+@dataclass(frozen=True, slots=True)
+class _PlannedAdd:
+    platform_id: str
+    draft: TrainerCloneDraft
+    slots: tuple[_SlotCopy, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PlannedUpdate:
+    platform_id: str
+    trainer_exercise_id: str
+    slots: tuple[_SlotCopy, ...]
+
+
+def _schedule_media_slot(
+    jobs: list[MediaCopyJob],
+    *,
+    source: str | None,
+    owner_id: str,
+    row_id: str,
+    field: str,
+    synced_field: str,
+    slot: str,
+) -> _SlotCopy:
+    platform_key = normalize_stored_media(source)
+    job_index = None
+    if source is not None and str(source).strip():
+        job_index = len(jobs)
+        jobs.append(MediaCopyJob(source=str(source), owner_id=owner_id, row_id=row_id, slot=slot))
+    return _SlotCopy(field=field, synced_field=synced_field, platform_key=platform_key, job_index=job_index)
+
+
+def _draft_with_media(
+    draft: TrainerCloneDraft,
+    slots: tuple[_SlotCopy, ...],
+    results: list[MediaCopyResult],
+) -> TrainerCloneDraft:
+    if not slots:
+        return draft
+    values: dict[str, str | None] = {}
+    for slot in slots:
+        stored = None if slot.job_index is None else results[slot.job_index].stored
+        values[slot.field] = stored
+        values[slot.synced_field] = slot.platform_key
+    return replace(draft, **values)
 
 
 def _muscle_lists(model: TrainerExerciseModel | PlatformExerciseModel) -> tuple[tuple[str, ...], tuple[str, ...]]:

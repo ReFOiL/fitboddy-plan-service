@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import logging
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -35,6 +36,8 @@ _VIDEO_TYPES_BY_EXTENSION: dict[str, str] = {
     ".mov": "video/quicktime",
 }
 _STREAM_CHUNK_BYTES = 64 * 1024
+# Верхняя граница одновременных CopyObject. Каталог ограничен 500 id, по 3 слота.
+MEDIA_COPY_CONCURRENCY = 4
 
 
 class MediaValidationError(ValueError):
@@ -86,6 +89,54 @@ def prepare_photo_upload(filename: str, data: bytes, *, max_bytes: int) -> tuple
     """
     _extension, declared = validate_photo_bytes(filename, data, max_bytes=max_bytes)
     return normalize_photo(data, declared)
+
+
+@dataclass(frozen=True, slots=True)
+class MediaCopyJob:
+    source: str
+    owner_id: str
+    row_id: str
+    slot: str
+
+
+@dataclass(frozen=True, slots=True)
+class MediaCopyResult:
+    stored: str | None
+    created_key: str | None
+
+
+def run_media_copies(
+    storage: S3MediaStorage | None,
+    jobs: list[MediaCopyJob],
+    *,
+    max_workers: int = MEDIA_COPY_CONCURRENCY,
+) -> list[MediaCopyResult]:
+    """Скопировать объекты вне транзакции БД, с ограниченным числом потоков.
+
+    Один объект выполняется в вызывающем потоке. Пачка уходит в пул, чтобы
+    долгий CopyObject не занимал соединение с базой. Вызов с event loop
+    нужно оборачивать в ``anyio.to_thread``, иначе пул всё равно ждёт вызывающий поток.
+    """
+    if not jobs:
+        return []
+
+    def _one(job: MediaCopyJob) -> MediaCopyResult:
+        before = normalize_stored_media(job.source)
+        stored = copy_or_share(
+            storage,
+            job.source,
+            owner_id=job.owner_id,
+            row_id=job.row_id,
+            slot=job.slot,
+        )
+        created = stored if stored and before and stored != before else None
+        return MediaCopyResult(stored=stored, created_key=created)
+
+    if len(jobs) == 1:
+        return [_one(jobs[0])]
+    workers = max(1, min(max_workers, len(jobs)))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="media-copy") as pool:
+        return list(pool.map(_one, jobs))
 
 
 def copy_or_share(
@@ -164,7 +215,7 @@ class S3MediaStorage:
         return object_name
 
     def copy_owned(self, source_key: str, *, owner_id: str, row_id: str, slot: str) -> str:
-        """Синхронная копия: клон каталога выполняется в синхронном use case."""
+        """Синхронная копия. Вызывающий код обязан делать её вне открытой транзакции БД."""
         extension = Path(source_key).suffix.lower()
         if slot == "video":
             prefix = f"{self.videos_prefix}{owner_id}/{row_id}/"

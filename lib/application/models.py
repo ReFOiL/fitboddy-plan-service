@@ -454,3 +454,26 @@ class ClientExerciseLoadModel(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class PendingMediaDeleteModel(Base):
+    """Ключ объекта, который нужно удалить из хранилища.
+
+    Строка пишется в той же транзакции, что и замена ключа в каталоге.
+    Повтор идёт при следующем sync: отдельного воркера в сервисе нет.
+    """
+
+    __tablename__ = "pending_media_deletes"
+    __table_args__ = (Index("ix_pending_media_deletes_attempts_created", "attempts", "created_at"),)
+
+    object_key: Mapped[str] = mapped_column(String(500), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
